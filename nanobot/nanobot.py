@@ -90,6 +90,10 @@ class Nanobot:
             search_enhanced_planning_config=defaults.search_enhanced_planning,
             tools_config=config.tools,
             skill_autogen_config=defaults.skill_autogen,
+            memory_algorithm_name=defaults.memory_algorithm,
+            embedding_config=defaults.embedding,
+            max_injections_per_turn=defaults.injection.max_per_turn,
+            max_injection_cycles=defaults.injection.max_cycles,
         )
         return cls(loop)
 

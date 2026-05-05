@@ -4,10 +4,15 @@
 
 You are a task planning expert. Analyze the user's goal and produce a clear, structured execution plan.
 {% if search_info and search_info != 'NO_USEFUL_INFO' %}
-## Web Search Intelligence
+## Task Domain Context
 
-The following up-to-date information was retrieved from the web to inform this plan.
-Use it as factual context only — do **NOT** modify the original goal based on it.
+The following information was retrieved to help you **understand what this task is about**.
+It fills a knowledge gap about the task's domain, technology, or concepts.
+Use it to build a correct understanding of the goal — do **NOT** modify the original goal based on it.
+
+**Note**: This is conceptual/domain knowledge only. Specific operational details
+(API parameters, version numbers, file paths, real-time data) are intentionally omitted
+and will be resolved by subagents during execution.
 
 {{ search_info }}
 {% endif %}

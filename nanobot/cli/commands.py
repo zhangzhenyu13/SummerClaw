@@ -599,6 +599,8 @@ def serve(
         search_enhanced_planning_config=runtime_config.agents.defaults.search_enhanced_planning,
         tools_config=runtime_config.tools,
         skill_autogen_config=runtime_config.agents.defaults.skill_autogen,
+        max_injections_per_turn=runtime_config.agents.defaults.injection.max_per_turn,
+        max_injection_cycles=runtime_config.agents.defaults.injection.max_cycles,
     )
 
     model_name = runtime_config.agents.defaults.model
@@ -699,7 +701,20 @@ def gateway(
         search_enhanced_planning_config=config.agents.defaults.search_enhanced_planning,
         tools_config=config.tools,
         skill_autogen_config=config.agents.defaults.skill_autogen,
+        memory_algorithm_name=config.agents.defaults.memory_algorithm,
+        max_injections_per_turn=config.agents.defaults.injection.max_per_turn,
+        max_injection_cycles=config.agents.defaults.injection.max_cycles,
     )
+
+    # Log memory algorithm selection
+    _mem_algo_name = agent.memory_algorithm_name
+    _configured_algo = config.agents.defaults.memory_algorithm
+    if _mem_algo_name != _configured_algo:
+        console.print(
+            f"[yellow]⚠[/yellow] Memory: '{_configured_algo}' → '{_mem_algo_name}' (fallback)"
+        )
+    else:
+        console.print(f"[green]✓[/green] Memory algorithm: {_mem_algo_name}")
 
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
@@ -836,10 +851,6 @@ def gateway(
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
 
-    cron_status = cron.status()
-    if cron_status["jobs"] > 0:
-        console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
-
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
     async def _health_server(host: str, health_port: int):
@@ -912,10 +923,77 @@ def gateway(
     else:
         console.print("[dim]  Skill-Autogen: disabled (set skill_autogen.enable=true to enable)[/dim]")
 
+    # Helper for human-readable schedule description
+    def _describe_cron_schedule(schedule) -> str:
+        from nanobot.cron.types import CronSchedule
+        if schedule.kind == "at" and schedule.at_ms:
+            from datetime import datetime
+            dt = datetime.fromtimestamp(schedule.at_ms / 1000)
+            return f"at {dt.strftime('%Y-%m-%d %H:%M')}"
+        if schedule.kind == "every" and schedule.every_ms:
+            mins = schedule.every_ms / 60_000
+            if mins < 60:
+                return f"every {mins:.0f}m"
+            hours = mins / 60
+            if hours < 24:
+                return f"every {hours:.1f}h"
+            return f"every {hours / 24:.1f}d"
+        if schedule.kind == "cron" and schedule.expr:
+            tz = f" ({schedule.tz})" if schedule.tz else ""
+            return f"cron '{schedule.expr}'{tz}"
+        return "unknown"
+
+    # Log detailed cron job listing
+    _all_jobs = cron.list_jobs(include_disabled=True)
+    if _all_jobs:
+        console.print("[bold]Cron jobs:[/bold]")
+        for _job in _all_jobs:
+            _enabled_mark = "[green]✓[/green]" if _job.enabled else "[dim]✗[/dim]"
+            _schedule_desc = _describe_cron_schedule(_job.schedule)
+            _kind = "[system]" if _job.payload.kind == "system_event" else "[user]"
+            console.print(
+                f"  {_enabled_mark} {_job.name} {_kind} — {_schedule_desc}"
+                f"{' (msg: ' + _job.payload.message[:40] + '...)' if _job.payload.message else ''}"
+            )
+    else:
+        console.print("[dim]  No cron jobs configured[/dim]")
+
+    # Build startup summary for channel notification
+    _startup_lines = [
+        "🚀 nanobot gateway started",
+        f"  Model: {agent.model}",
+        f"  Memory: {_mem_algo_name}",
+        f"  Heartbeat: every {hb_cfg.interval_s}s",
+        f"  Dream: {dream_cfg.describe_schedule()}",
+        f"  Skill-Autogen: {'enabled' if skill_autogen_cfg.enable else 'disabled'}",
+    ]
+    if channels.enabled_channels:
+        _startup_lines.append(f"  Channels: {', '.join(channels.enabled_channels)}")
+    if _all_jobs:
+        _job_summaries = []
+        for _job in _all_jobs:
+            _status = "✓" if _job.enabled else "✗"
+            _job_summaries.append(
+                f"{_status} {_job.name} ({_describe_cron_schedule(_job.schedule)})"
+            )
+        _startup_lines.append(f"  Cron: {len(_all_jobs)} jobs — {', '.join(_job_summaries)}")
+    _startup_summary = "\n".join(_startup_lines)
+
     async def run():
         try:
             await cron.start()
             await heartbeat.start()
+
+            # Schedule startup notification to channels (best-effort, non-blocking)
+            async def _notify_startup():
+                await asyncio.sleep(3)  # Brief delay for channels to establish connections
+                try:
+                    await channels.notify_startup(_startup_summary)
+                except Exception:
+                    logger.exception("Failed to push startup notification to channels")
+
+            asyncio.create_task(_notify_startup())
+
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
@@ -1004,6 +1082,9 @@ def agent(
         search_enhanced_planning_config=config.agents.defaults.search_enhanced_planning,
         tools_config=config.tools,
         skill_autogen_config=config.agents.defaults.skill_autogen,
+        memory_algorithm_name=config.agents.defaults.memory_algorithm,
+        max_injections_per_turn=config.agents.defaults.injection.max_per_turn,
+        max_injection_cycles=config.agents.defaults.injection.max_cycles,
     )
     restart_notice = consume_restart_notice_from_env()
     if restart_notice and should_show_cli_restart_notice(restart_notice, session_id):

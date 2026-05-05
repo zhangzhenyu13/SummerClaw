@@ -9,6 +9,7 @@ from loguru import logger
 from nanobot.utils.helpers import stringify_text_blocks
 
 _MAX_REPEAT_EXTERNAL_LOOKUPS = 2
+_MAX_BLOCK_BEFORE_FATAL = 3  # additional blocked attempts before forcing the loop to stop
 
 EMPTY_FINAL_RESPONSE_MESSAGE = (
     "I completed the tool steps but couldn't produce a final answer. "
@@ -81,8 +82,13 @@ def repeated_external_lookup_error(
     tool_name: str,
     arguments: dict[str, Any],
     seen_counts: dict[str, int],
-) -> str | None:
-    """Block repeated external lookups after a small retry budget."""
+) -> tuple[str, bool] | None:
+    """Block repeated external lookups after a small retry budget.
+
+    Returns ``(error_message, is_fatal)`` when the lookup should be blocked,
+    or ``None`` when it is still allowed.  *is_fatal* is ``True`` when the
+    same call has been blocked too many times and the agent loop should stop.
+    """
     signature = external_lookup_signature(tool_name, arguments)
     if signature is None:
         return None
@@ -90,12 +96,24 @@ def repeated_external_lookup_error(
     seen_counts[signature] = count
     if count <= _MAX_REPEAT_EXTERNAL_LOOKUPS:
         return None
+    fatal = count > _MAX_REPEAT_EXTERNAL_LOOKUPS + _MAX_BLOCK_BEFORE_FATAL
     logger.warning(
-        "Blocking repeated external lookup {} on attempt {}",
+        "Blocking repeated external lookup {} on attempt {} (fatal={})",
         signature[:160],
         count,
+        fatal,
     )
-    return (
-        "Error: repeated external lookup blocked. "
-        "Use the results you already have to answer, or try a meaningfully different source."
-    )
+    if fatal:
+        message = (
+            "CRITICAL: This exact external lookup has been blocked after "
+            f"{count} repeated attempts. You MUST stop calling this command "
+            "immediately. Provide your best answer with whatever information "
+            "you already have, or inform the user that this lookup could not "
+            "be completed."
+        )
+    else:
+        message = (
+            "Error: repeated external lookup blocked. "
+            "Use the results you already have to answer, or try a meaningfully different source."
+        )
+    return message, fatal

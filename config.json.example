@@ -8,9 +8,11 @@
         "max_results": 5,
         "timeout": 120,
         "search_on_replan": false,
-        "max_purified_chars": 2000
+        "max_purified_chars": 2000,
+        "web_search_backend": "auto"
       },
       "max_subagent_depth": 2,
+      "max_replan_iterations": 2,
       "model": "your model here",
       "provider": "auto",
       "maxTokens": 65536,
@@ -24,7 +26,16 @@
       "timezone": "UTC",
       "unifiedSession": false,
       "disabledSkills": [],
+      "memoryAlgorithm": "naive_memory",
       "idleCompactAfterMinutes": 0,
+      "embedding": {
+        "model": "text-embedding-3-small",
+        "provider": "auto",
+        "apiKey": null,
+        "apiBase": null,
+        "batchSize": 16,
+        "normalize": true
+      },
       "dream": {
         "intervalH": 2,
         "modelOverride": null,
@@ -35,7 +46,12 @@
       "skill_autogen": {
         "enable": true,
         "nudge_interval": 10,
-        "max_iterations": 8
+        "max_iterations": 8,
+        "model_override": null
+      },
+      "injection": {
+        "max_per_turn": 3,
+        "max_cycles": 5
       }
     }
   },
@@ -398,6 +414,11 @@
         "timeout": 30
       }
     },
+    "browser": {
+      "enable": false,
+      "enable_control": false,
+      "timeout": 30000
+    },
     "exec": {
       "enable": true,
       "timeout": 120,
@@ -410,7 +431,28 @@
       "allowSet": false
     },
     "restrictToWorkspace": false,
-    "mcpServers": {},
+    "mcpServers": {
+      "example_stdio": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-example"],
+        "env": {},
+        "url": "",
+        "headers": {},
+        "tool_timeout": 30,
+        "enabled_tools": ["*"]
+      },
+      "example_http": {
+        "type": "streamableHttp",
+        "command": "",
+        "args": [],
+        "env": {},
+        "url": "https://mcp.example.com/mcp",
+        "headers": {},
+        "tool_timeout": 30,
+        "enabled_tools": ["*"]
+      }
+    },
     "ssrfWhitelist": []
   }
 }

@@ -45,6 +45,7 @@ _COMPACTABLE_TOOLS = frozenset({
     "web_search", "web_fetch", "list_dir",
 })
 _BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
+_ASK_USER_PENDING = "__ASK_USER_PENDING__"
 
 
 
@@ -73,6 +74,8 @@ class AgentRunSpec:
     progress_callback: Any | None = None
     checkpoint_callback: Any | None = None
     injection_callback: Any | None = None
+    max_injections_per_turn: int = _MAX_INJECTIONS_PER_TURN
+    max_injection_cycles: int = _MAX_INJECTION_CYCLES
 
 
 @dataclass(slots=True)
@@ -146,12 +149,14 @@ class AgentRunner:
     ) -> tuple[bool, int]:
         """Drain pending injections. Returns (should_continue, updated_cycles).
 
-        If injections are found and we haven't exceeded _MAX_INJECTION_CYCLES,
-        append them to *messages* (and emit a checkpoint if *assistant_message*
-        and *iteration* are both provided) and return (True, cycles+1) so the
-        caller continues the iteration loop.  Otherwise return (False, cycles).
+        If injections are found and we haven't exceeded the configured max
+        injection cycles, append them to *messages* (and emit a checkpoint if
+        *assistant_message* and *iteration* are both provided) and return
+        (True, cycles+1) so the caller continues the iteration loop.
+        Otherwise return (False, cycles).
         """
-        if injection_cycles >= _MAX_INJECTION_CYCLES:
+        max_cycles = spec.max_injection_cycles
+        if injection_cycles >= max_cycles:
             return False, injection_cycles
         injections = await self._drain_injections(spec)
         if not injections:
@@ -174,20 +179,21 @@ class AgentRunner:
         self._append_injected_messages(messages, injections)
         logger.info(
             "Injected {} follow-up message(s) {} ({}/{})",
-            len(injections), phase, injection_cycles, _MAX_INJECTION_CYCLES,
+            len(injections), phase, injection_cycles, max_cycles,
         )
         return True, injection_cycles
 
     async def _drain_injections(self, spec: AgentRunSpec) -> list[dict[str, Any]]:
         """Drain pending user messages via the injection callback.
 
-        Returns normalized user messages (capped by
-        ``_MAX_INJECTIONS_PER_TURN``), or an empty list when there is
-        nothing to inject. Messages beyond the cap are logged so they
-        are not silently lost.
+        Returns normalized user messages (capped by the configured
+        max per turn), or an empty list when there is nothing to
+        inject. Messages beyond the cap are logged so they are not
+        silently lost.
         """
         if spec.injection_callback is None:
             return []
+        limit = spec.max_injections_per_turn
         try:
             signature = inspect.signature(spec.injection_callback)
             accepts_limit = (
@@ -198,7 +204,7 @@ class AgentRunner:
                 )
             )
             if accepts_limit:
-                items = await spec.injection_callback(limit=_MAX_INJECTIONS_PER_TURN)
+                items = await spec.injection_callback(limit=limit)
             else:
                 items = await spec.injection_callback()
         except Exception:
@@ -214,13 +220,13 @@ class AgentRunner:
             text = getattr(item, "content", str(item))
             if text.strip():
                 injected_messages.append({"role": "user", "content": text})
-        if len(injected_messages) > _MAX_INJECTIONS_PER_TURN:
-            dropped = len(injected_messages) - _MAX_INJECTIONS_PER_TURN
+        if len(injected_messages) > limit:
+            dropped = len(injected_messages) - limit
             logger.warning(
                 "Injection callback returned {} messages, capping to {} ({} dropped)",
-                len(injected_messages), _MAX_INJECTIONS_PER_TURN, dropped,
+                len(injected_messages), limit, dropped,
             )
-            injected_messages = injected_messages[:_MAX_INJECTIONS_PER_TURN]
+            injected_messages = injected_messages[:limit]
         return injected_messages
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
@@ -307,6 +313,54 @@ class AgentRunner:
                 tool_events.extend(new_events)
                 context.tool_results = list(results)
                 context.tool_events = list(new_events)
+
+                # -- ask_user pending: pause loop, wait for injection ---------
+                _ask_user_hit = any(r == _ASK_USER_PENDING for r in results)
+                if _ask_user_hit:
+                    # Only add non-ask_user tool results to the conversation.
+                    # ask_user returns a control marker, not data for the LLM.
+                    _normal_results: list[dict[str, Any]] = []
+                    for tool_call, result in zip(response.tool_calls, results):
+                        if result == _ASK_USER_PENDING:
+                            continue
+                        tool_message = {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": self._normalize_tool_result(
+                                spec,
+                                tool_call.id,
+                                tool_call.name,
+                                result,
+                            ),
+                        }
+                        messages.append(tool_message)
+                        _normal_results.append(tool_message)
+                    if _normal_results:
+                        await self._emit_checkpoint(
+                            spec,
+                            {
+                                "phase": "tools_completed",
+                                "iteration": iteration,
+                                "model": spec.model,
+                                "assistant_message": assistant_message,
+                                "completed_tool_results": _normal_results,
+                                "pending_tool_calls": [],
+                            },
+                        )
+                    empty_content_retries = 0
+                    length_recovery_count = 0
+                    # Reset injection_cycles to 0 so ask_user always gets a
+                    # fresh injection budget regardless of prior drains.
+                    _drained, injection_cycles = await self._try_drain_injections(
+                        spec, messages, None, 0,
+                        phase="after ask_user",
+                    )
+                    if _drained:
+                        had_injections = True
+                    await hook.after_iteration(context)
+                    continue
+
                 completed_tool_results: list[dict[str, Any]] = []
                 for tool_call, result in zip(response.tool_calls, results):
                     tool_message = {
@@ -653,18 +707,19 @@ class AgentRunner:
         external_lookup_counts: dict[str, int],
     ) -> tuple[Any, dict[str, str], BaseException | None]:
         _HINT = "\n\n[Analyze the error above and try a different approach.]"
-        lookup_error = repeated_external_lookup_error(
+        blocked = repeated_external_lookup_error(
             tool_call.name,
             tool_call.arguments,
             external_lookup_counts,
         )
-        if lookup_error:
+        if blocked is not None:
+            lookup_error, is_fatal = blocked
             event = {
                 "name": tool_call.name,
                 "status": "error",
                 "detail": "repeated external lookup blocked",
             }
-            if spec.fail_on_tool_error:
+            if is_fatal or spec.fail_on_tool_error:
                 return lookup_error + _HINT, event, RuntimeError(lookup_error)
             return lookup_error + _HINT, event, None
         prepare_call = getattr(spec.tools, "prepare_call", None)
@@ -699,6 +754,14 @@ class AgentRunner:
             if spec.fail_on_tool_error:
                 return f"Error: {type(exc).__name__}: {exc}", event, exc
             return f"Error: {type(exc).__name__}: {exc}", event, None
+
+        if result == _ASK_USER_PENDING:
+            event = {
+                "name": tool_call.name,
+                "status": "ask_user",
+                "detail": "waiting for user reply",
+            }
+            return _ASK_USER_PENDING, event, None
 
         if isinstance(result, str) and result.startswith("Error"):
             event = {

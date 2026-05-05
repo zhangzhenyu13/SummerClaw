@@ -312,3 +312,26 @@ class ChannelManager:
     def enabled_channels(self) -> list[str]:
         """Get list of enabled channel names."""
         return list(self.channels.keys())
+
+    async def notify_startup(self, message: str) -> None:
+        """Broadcast a startup notification to all enabled channels.
+
+        Each channel receives the message via its ``notify_startup`` hook.
+        Subclasses that don't override the hook will log the message at info
+        level.  This is best-effort — individual channel failures are logged
+        but do not prevent other channels from receiving the notification.
+
+        Args:
+            message: The formatted startup summary text.
+        """
+        if not self.channels:
+            logger.info("No channels enabled — startup notification skipped")
+            return
+
+        for name, channel in self.channels.items():
+            try:
+                await channel.notify_startup(message)
+            except Exception:
+                logger.exception(
+                    "Channel '{}' failed to handle startup notification", name
+                )

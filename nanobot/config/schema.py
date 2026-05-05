@@ -102,6 +102,52 @@ class SearchEnhancedPlanningConfig(Base):
     )
 
 
+class InjectionConfig(Base):
+    """Mid-turn message injection configuration.
+
+    Controls how follow-up messages sent by the user while the agent is
+    executing a task are drained from the pending queue and injected into
+    the conversation.  Higher values allow more messages per turn but
+    increase the risk of overwhelming the LLM with interleaved context.
+    """
+
+    max_per_turn: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        description="Max number of pending messages drained in one injection cycle.",
+    )
+    max_cycles: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Max number of injection cycles allowed per agent run.",
+    )
+
+
+class EmbeddingConfig(Base):
+    """Embedding model configuration.
+
+    Controls which embedding model and API endpoint are used for generating
+    embeddings in memory algorithms (e.g. EMem) and other features that
+    require vector embeddings.
+
+    When ``provider`` is ``"auto"`` (default), the embedding API credentials
+    are resolved from the LLM provider (same api_key/api_base).  Set
+    ``provider`` to a specific provider name (e.g. ``"openai"``,
+    ``"siliconflow"``) to use that provider's credentials instead.  Use
+    ``provider="local"`` to run a Sentence-Transformers model locally
+    (requires ``pip install nanobot-ai[emem]``).
+    """
+
+    model: str = "text-embedding-3-small"  # Embedding model name (OpenAI-compatible or HuggingFace for local)
+    provider: str = "auto"  # Provider name or "auto" (inherit LLM provider) or "local" (Sentence-Transformers)
+    api_key: str | None = None  # Optional override for embedding API key
+    api_base: str | None = None  # Optional override for embedding API base URL
+    batch_size: int = Field(default=16, ge=1)  # Batch size for embedding model calls
+    normalize: bool = True  # L2-normalize output vectors
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -121,6 +167,10 @@ class AgentDefaults(Base):
     timezone: str = "UTC"  # IANA timezone, e.g. "Asia/Shanghai", "America/New_York"
     unified_session: bool = False  # Share one session across all channels (single-user multi-device)
     disabled_skills: list[str] = Field(default_factory=list)  # Skill names to exclude from loading (e.g. ["summarize", "skill-creator"])
+    memory_algorithm: str = Field(
+        default="naive_memory",
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )  # Memory algorithm name (must be registered in MemoryRegistry, e.g. "naive_memory")
     plan_and_solve: bool = False  # Enable plan-and-solve mode: generates a structured plan before execution
     max_subagent_depth: int = Field(
         default=0,
@@ -138,11 +188,15 @@ class AgentDefaults(Base):
         validation_alias=AliasChoices("idleCompactAfterMinutes", "sessionTtlMinutes"),
         serialization_alias="idleCompactAfterMinutes",
     )  # Auto-compact idle threshold in minutes (0 = disabled)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     dream: DreamConfig = Field(default_factory=DreamConfig)
     skill_autogen: SkillAutogenConfig = Field(default_factory=SkillAutogenConfig)  # Skill auto-generation (disabled by default)
     search_enhanced_planning: SearchEnhancedPlanningConfig = Field(
         default_factory=SearchEnhancedPlanningConfig
     )  # Search-enhanced planning: pre-planning web search augmentation
+    injection: InjectionConfig = Field(
+        default_factory=InjectionConfig
+    )  # Mid-turn message injection control
 
 
 class AgentsConfig(Base):
@@ -235,6 +289,15 @@ class BrowserToolsConfig(Base):
     """
 
     enable: bool = False
+    enable_control: bool = Field(
+        default=False,
+        description=(
+            "Enable stateful browser control tools (browser_navigate / browser_snapshot / "
+            "browser_execute_js). These maintain a persistent headless Chromium session "
+            "across calls, allowing multi-step page interaction, JS injection, and "
+            "accessibility-tree snapshots. Requires ``enable: true`` as well."
+        ),
+    )
     timeout: int = Field(
         default=30000,
         ge=1000,

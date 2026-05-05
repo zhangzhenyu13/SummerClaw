@@ -1,4 +1,4 @@
-"""Auto compact: proactive compression of idle sessions to reduce token cost and latency."""
+"""ReMe auto compact: proactive compression of idle sessions via ReMeLight."""
 
 from __future__ import annotations
 
@@ -7,25 +7,44 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
 from loguru import logger
+
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.agent.memory import Consolidator
+    from nanobot.memory.remem_memory.consolidator import ReMeConsolidator
 
 
-class AutoCompact:
+class ReMeAutoCompact:
+    """Auto-compact adapter that delegates compression to ``ReMeConsolidator.archive``.
+
+    Mirrors the interface of :class:`nanobot.memory.naive_memory.auto_compact.AutoCompact`
+    but uses ReMeLight's ``compact_memory()`` pipeline (invoked through
+    ``ReMeConsolidator.archive``) for the actual summarisation step.
+    """
+
     _RECENT_SUFFIX_MESSAGES = 8
 
-    def __init__(self, sessions: SessionManager, consolidator: Consolidator,
-                 session_ttl_minutes: int = 0):
+    def __init__(
+        self,
+        sessions: SessionManager,
+        consolidator: ReMeConsolidator,
+        session_ttl_minutes: int = 0,
+    ):
         self.sessions = sessions
         self.consolidator = consolidator
         self._ttl = session_ttl_minutes
         self._archiving: set[str] = set()
         self._summaries: dict[str, tuple[str, datetime]] = {}
 
-    def _is_expired(self, ts: datetime | str | None,
-                    now: datetime | None = None) -> bool:
+    # ------------------------------------------------------------------
+    # TTL helpers
+    # ------------------------------------------------------------------
+
+    def _is_expired(
+        self,
+        ts: datetime | str | None,
+        now: datetime | None = None,
+    ) -> bool:
         if self._ttl <= 0 or not ts:
             return False
         if isinstance(ts, str):
@@ -37,11 +56,16 @@ class AutoCompact:
         idle_min = int((datetime.now() - last_active).total_seconds() / 60)
         return f"Inactive for {idle_min} minutes.\nPrevious conversation summary: {text}"
 
+    # ------------------------------------------------------------------
+    # Session splitting
+    # ------------------------------------------------------------------
+
     def _split_unconsolidated(
-        self, session: Session,
+        self,
+        session: Session,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Split live session tail into archiveable prefix and retained recent suffix."""
-        tail = list(session.messages[session.last_consolidated:])
+        """Split live session tail into archivable prefix and retained recent suffix."""
+        tail = list(session.messages[session.last_consolidated :])
         if not tail:
             return [], []
 
@@ -58,8 +82,15 @@ class AutoCompact:
         cut = len(tail) - len(kept)
         return tail[:cut], kept
 
-    def check_expired(self, schedule_background: Callable[[Coroutine], None],
-                      active_session_keys: Collection[str] = ()) -> None:
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def check_expired(
+        self,
+        schedule_background: Callable[[Coroutine], None],
+        active_session_keys: Collection[str] = (),
+    ) -> None:
         """Schedule archival for idle sessions, skipping those with in-flight agent tasks."""
         now = datetime.now()
         for info in self.sessions.list_sessions():
@@ -88,27 +119,38 @@ class AutoCompact:
                 summary = await self.consolidator.archive(archive_msgs) or ""
             if summary and summary != "(nothing)":
                 self._summaries[key] = (summary, last_active)
-                session.metadata["_last_summary"] = {"text": summary, "last_active": last_active.isoformat()}
+                session.metadata["_last_summary"] = {
+                    "text": summary,
+                    "last_active": last_active.isoformat(),
+                }
             session.messages = kept_msgs
             session.last_consolidated = 0
             session.updated_at = datetime.now()
             self.sessions.save(session)
             if archive_msgs:
                 logger.info(
-                    "Auto-compact: archived {} (archived={}, kept={}, summary={})",
+                    "ReMe auto-compact: archived {} (archived={}, kept={}, summary={})",
                     key,
                     len(archive_msgs),
                     len(kept_msgs),
                     bool(summary),
                 )
         except Exception:
-            logger.exception("Auto-compact: failed for {}", key)
+            logger.exception("ReMe auto-compact: failed for {}", key)
         finally:
             self._archiving.discard(key)
 
-    def prepare_session(self, session: Session, key: str) -> tuple[Session, str | None]:
+    def prepare_session(
+        self,
+        session: Session,
+        key: str,
+    ) -> tuple[Session, str | None]:
         if key in self._archiving or self._is_expired(session.updated_at):
-            logger.info("Auto-compact: reloading session {} (archiving={})", key, key in self._archiving)
+            logger.info(
+                "ReMe auto-compact: reloading session {} (archiving={})",
+                key,
+                key in self._archiving,
+            )
             session = self.sessions.get_or_create(key)
         # Hot path: summary from in-memory dict (process hasn't restarted).
         # Also clean metadata copy so stale _last_summary never leaks to disk.
@@ -119,5 +161,8 @@ class AutoCompact:
         if "_last_summary" in session.metadata:
             meta = session.metadata.pop("_last_summary")
             self.sessions.save(session)
-            return session, self._format_summary(meta["text"], datetime.fromisoformat(meta["last_active"]))
+            return session, self._format_summary(
+                meta["text"],
+                datetime.fromisoformat(meta["last_active"]),
+            )
         return session, None

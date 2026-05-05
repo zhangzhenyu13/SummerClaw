@@ -13,7 +13,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.providers.base import LLMResponse
 
 
-def _make_loop():
+def _make_loop(tmp_path):
     """Create a minimal AgentLoop with mocked dependencies."""
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
@@ -21,20 +21,20 @@ def _make_loop():
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
-    workspace = MagicMock()
-    workspace.__truediv__ = MagicMock(return_value=MagicMock())
 
     with patch("nanobot.agent.loop.ContextBuilder"), \
          patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager"):
-        loop = AgentLoop(bus=bus, provider=provider, workspace=workspace)
+         patch("nanobot.agent.loop.SubagentManager"), \
+         patch("nanobot.memory.naive_memory.consolidator.Consolidator"), \
+         patch("nanobot.memory.naive_memory.dream.Dream"):
+        loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
     return loop, bus
 
 
 class TestRestartCommand:
 
     @pytest.mark.asyncio
-    async def test_restart_sends_message_and_calls_execv(self):
+    async def test_restart_sends_message_and_calls_execv(self, tmp_path):
         from nanobot.command.builtin import cmd_restart
         from nanobot.command.router import CommandContext
         from nanobot.utils.restart import (
@@ -43,7 +43,7 @@ class TestRestartCommand:
             RESTART_STARTED_AT_ENV,
         )
 
-        loop, bus = _make_loop()
+        loop, bus = _make_loop(tmp_path)
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="/restart")
         ctx = CommandContext(msg=msg, session=None, key=msg.session_key, raw="/restart", loop=loop)
 
@@ -59,9 +59,9 @@ class TestRestartCommand:
             mock_execv.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_restart_intercepted_in_run_loop(self):
+    async def test_restart_intercepted_in_run_loop(self, tmp_path):
         """Verify /restart is handled at the run-loop level, not inside _dispatch."""
-        loop, bus = _make_loop()
+        loop, bus = _make_loop(tmp_path)
         msg = InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="/restart")
 
         with patch.object(loop, "_dispatch", new_callable=AsyncMock) as mock_dispatch, \
@@ -83,9 +83,9 @@ class TestRestartCommand:
             assert "Restarting" in out.content
 
     @pytest.mark.asyncio
-    async def test_status_intercepted_in_run_loop(self):
+    async def test_status_intercepted_in_run_loop(self, tmp_path):
         """Verify /status is handled at the run-loop level for immediate replies."""
-        loop, bus = _make_loop()
+        loop, bus = _make_loop(tmp_path)
         msg = InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="/status")
 
         with patch.object(loop, "_dispatch", new_callable=AsyncMock) as mock_dispatch:
@@ -106,9 +106,9 @@ class TestRestartCommand:
             assert "nanobot" in out.content.lower() or "Model" in out.content
 
     @pytest.mark.asyncio
-    async def test_run_propagates_external_cancellation(self):
+    async def test_run_propagates_external_cancellation(self, tmp_path):
         """External task cancellation should not be swallowed by the inbound wait loop."""
-        loop, _bus = _make_loop()
+        loop, _bus = _make_loop(tmp_path)
 
         run_task = asyncio.create_task(loop.run())
         await asyncio.sleep(0.1)
@@ -118,8 +118,8 @@ class TestRestartCommand:
             await asyncio.wait_for(run_task, timeout=1.0)
 
     @pytest.mark.asyncio
-    async def test_help_includes_restart(self):
-        loop, bus = _make_loop()
+    async def test_help_includes_restart(self, tmp_path):
+        loop, bus = _make_loop(tmp_path)
         msg = InboundMessage(channel="telegram", sender_id="u1", chat_id="c1", content="/help")
 
         response = await loop._process_message(msg)
@@ -130,8 +130,8 @@ class TestRestartCommand:
         assert response.metadata == {"render_as": "text"}
 
     @pytest.mark.asyncio
-    async def test_status_reports_runtime_info(self):
-        loop, _bus = _make_loop()
+    async def test_status_reports_runtime_info(self, tmp_path):
+        loop, _bus = _make_loop(tmp_path)
         session = MagicMock()
         session.get_history.return_value = [{"role": "user"}] * 3
         loop.sessions.get_or_create.return_value = session
@@ -156,8 +156,8 @@ class TestRestartCommand:
         assert response.metadata == {"render_as": "text"}
 
     @pytest.mark.asyncio
-    async def test_status_counts_running_dispatch_and_subagent_tasks(self):
-        loop, _bus = _make_loop()
+    async def test_status_counts_running_dispatch_and_subagent_tasks(self, tmp_path):
+        loop, _bus = _make_loop(tmp_path)
         session = MagicMock()
         session.get_history.return_value = [{"role": "user"}]
         loop.sessions.get_or_create.return_value = session
@@ -180,8 +180,8 @@ class TestRestartCommand:
         assert "Tasks: 3 active" in response.content
 
     @pytest.mark.asyncio
-    async def test_run_agent_loop_resets_usage_when_provider_omits_it(self):
-        loop, _bus = _make_loop()
+    async def test_run_agent_loop_resets_usage_when_provider_omits_it(self, tmp_path):
+        loop, _bus = _make_loop(tmp_path)
         loop.provider.chat_with_retry = AsyncMock(side_effect=[
             LLMResponse(content="first", usage={"prompt_tokens": 9, "completion_tokens": 4}),
             LLMResponse(content="second", usage={}),
@@ -196,8 +196,8 @@ class TestRestartCommand:
         assert loop._last_usage["completion_tokens"] == 0
 
     @pytest.mark.asyncio
-    async def test_status_falls_back_to_last_usage_when_context_estimate_missing(self):
-        loop, _bus = _make_loop()
+    async def test_status_falls_back_to_last_usage_when_context_estimate_missing(self, tmp_path):
+        loop, _bus = _make_loop(tmp_path)
         session = MagicMock()
         session.get_history.return_value = [{"role": "user"}]
         loop.sessions.get_or_create.return_value = session
@@ -217,8 +217,8 @@ class TestRestartCommand:
         assert "Tasks: 0 active" in response.content
 
     @pytest.mark.asyncio
-    async def test_process_direct_preserves_render_metadata(self):
-        loop, _bus = _make_loop()
+    async def test_process_direct_preserves_render_metadata(self, tmp_path):
+        loop, _bus = _make_loop(tmp_path)
         session = MagicMock()
         session.get_history.return_value = []
         loop.sessions.get_or_create.return_value = session

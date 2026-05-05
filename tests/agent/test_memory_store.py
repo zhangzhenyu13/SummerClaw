@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent.memory import MemoryStore
+from nanobot.memory import MemoryStore
 
 
 @pytest.fixture

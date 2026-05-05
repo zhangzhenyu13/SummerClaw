@@ -23,7 +23,7 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.utils.prompt_templates import render_template
 
 if TYPE_CHECKING:
-    from nanobot.agent.memory import MemoryStore
+    from nanobot.memory.naive_memory.store import MemoryStore
     from nanobot.providers.base import LLMProvider
 
 

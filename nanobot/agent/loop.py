@@ -13,10 +13,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.autocompact import AutoCompact
+from nanobot.agent.complexity import LLMComplexityEvaluator, is_complex_task
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.hook import AgentHook, AgentHookContext, CompositeHook
-from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.subagent import SubagentManager
@@ -30,6 +29,13 @@ from nanobot.agent.tools.search import GlobTool, GrepTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.self import MyTool
 from nanobot.agent.tools.spawn import SpawnTool
+from nanobot.agent.tools.ask_user import ASK_USER_PENDING, AskUserTool
+from nanobot.agent.tools.browser_control import (
+    BrowserExecuteJSTool,
+    BrowserManager,
+    BrowserNavigateTool,
+    BrowserSnapshotTool,
+)
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
@@ -167,6 +173,10 @@ class AgentLoop:
         search_enhanced_planning_config: "SearchEnhancedPlanningConfig | None" = None,
         tools_config: "ToolsConfig | None" = None,
         skill_autogen_config: "SkillAutogenConfig | None" = None,
+        memory_algorithm_name: str = "naive_memory",
+        embedding_config: Any = None,
+        max_injections_per_turn: int = _MAX_INJECTIONS_PER_TURN,
+        max_injection_cycles: int = 5,
     ):
         from nanobot.config.schema import BrowserToolsConfig, ExecToolConfig, ToolsConfig, WebToolsConfig
 
@@ -193,17 +203,79 @@ class AgentLoop:
             else defaults.max_tool_result_chars
         )
         self.provider_retry_mode = provider_retry_mode
+        self.max_injections_per_turn = max_injections_per_turn
+        self.max_injection_cycles = max_injection_cycles
         self.web_config = web_config or WebToolsConfig()
         self.exec_config = exec_config or ExecToolConfig()
         self.browser_config: BrowserToolsConfig = _tc.browser
+        self._browser_manager: BrowserManager | None = None
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
 
-        self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
         self.sessions = session_manager or SessionManager(workspace)
+
+        # Build memory components via the configured algorithm
+        from nanobot.memory import _HAS_EMEM, _HAS_REME
+        from nanobot.memory.registry import MemoryRegistry
+        from nanobot.memory.naive_memory import NaiveMemoryAlgorithm
+        from nanobot.memory.nemori_memory import NemoriMemoryAlgorithm
+        from nanobot.memory.layerga_memory import LayergaMemoryAlgorithm
+
+        _REME_INSTALL_MSG = (
+            "ReMe memory algorithm 'remem_memory' is configured but the 'reme' "
+            "package is not installed.\n"
+            "Install via:  git clone https://github.com/agentscope-ai/ReMe.git\n"
+            "              cd ReMe && pip install -e \".[light]\"\n"
+            "Falling back to 'naive_memory'."
+        )
+
+        _original_algorithm_name = memory_algorithm_name
+        if memory_algorithm_name == "remem_memory" and not _HAS_REME:
+            logger.warning(_REME_INSTALL_MSG)
+            memory_algorithm_name = "naive_memory"
+
+        self.memory_algorithm_name = memory_algorithm_name
+
+        _mem_registry = MemoryRegistry()
+        _mem_registry.register(NaiveMemoryAlgorithm())
+        _mem_registry.register(NemoriMemoryAlgorithm())
+        _mem_registry.register(LayergaMemoryAlgorithm())
+        if _HAS_REME:
+            from nanobot.memory.remem_memory import ReMeMemoryAlgorithm
+
+            _mem_registry.register(ReMeMemoryAlgorithm())
+        if _HAS_EMEM:
+            from nanobot.memory.emem_memory import EMemMemoryAlgorithm
+
+            _mem_registry.register(EMemMemoryAlgorithm())
+        _mem_algo = _mem_registry.get(memory_algorithm_name)
+        _mem = _mem_algo.build(
+            workspace=workspace,
+            provider=provider,
+            model=self.model,
+            sessions=self.sessions,
+            context_window_tokens=self.context_window_tokens,
+            build_messages=None,  # set below after context is built
+            get_tool_definitions=None,  # set below after tools registered
+            max_completion_tokens=provider.generation.max_tokens,
+            session_ttl_minutes=session_ttl_minutes,
+            max_batch_size=20,
+            max_iterations=10,
+            max_tool_result_chars=self.max_tool_result_chars,
+            annotate_line_ages=True,
+            embedding_config=embedding_config,
+        )
+        self.consolidator = _mem.consolidator
+        self.dream = _mem.dream
+        self.auto_compact = _mem.auto_compact
+
+        self.context = ContextBuilder(
+            workspace, timezone=timezone, disabled_skills=disabled_skills,
+            memory_store=_mem.store,
+        )
         self.tools = ToolRegistry()
         self.runner = AgentRunner(provider)
         self._task_registry = TaskRegistry(workspace)
@@ -232,8 +304,17 @@ class AgentLoop:
                 max_tool_result_chars=self.max_tool_result_chars,
                 max_subagent_depth=max_subagent_depth,
             )
+            # Plan-and-Solve: create LLM-based complexity evaluator
+            self._complexity_evaluator: LLMComplexityEvaluator | None = (
+                LLMComplexityEvaluator(
+                    provider=provider,
+                    model=self.model,
+                    max_tool_result_chars=self.max_tool_result_chars,
+                )
+            )
         else:
             self._planner = None
+            self._complexity_evaluator = None
         # Plan-and-Solve: create a TaskEvaluator for closed-loop replanning
         if plan_and_solve and max_replan_iterations > 0:
             from nanobot.agent.evaluator import TaskEvaluator
@@ -285,26 +366,6 @@ class AgentLoop:
         self._concurrency_gate: asyncio.Semaphore | None = (
             asyncio.Semaphore(_max) if _max > 0 else None
         )
-        self.consolidator = Consolidator(
-            store=self.context.memory,
-            provider=provider,
-            model=self.model,
-            sessions=self.sessions,
-            context_window_tokens=self.context_window_tokens,
-            build_messages=self.context.build_messages,
-            get_tool_definitions=self.tools.get_definitions,
-            max_completion_tokens=provider.generation.max_tokens,
-        )
-        self.auto_compact = AutoCompact(
-            sessions=self.sessions,
-            consolidator=self.consolidator,
-            session_ttl_minutes=session_ttl_minutes,
-        )
-        self.dream = Dream(
-            store=self.context.memory,
-            provider=provider,
-            model=self.model,
-        )
         # Skill-Autogen: background tool-call-threshold-triggered skill generation
         # (distinct from Dream — Dream consolidates memory files, Skill-Autogen creates SKILL.md)
         self._skill_autogen_config = skill_autogen_config
@@ -320,6 +381,10 @@ class AgentLoop:
                 max_tool_result_chars=self.max_tool_result_chars,
             )
         self._register_default_tools()
+        # Patch consolidator callbacks now that context and tools are ready
+        if self.consolidator is not None:
+            self.consolidator._build_messages = self.context.build_messages
+            self.consolidator._get_tool_definitions = self.tools.get_definitions
         if _tc.my.enable:
             self.tools.register(MyTool(loop=self, modify_allowed=_tc.my.allow_set))
         self._runtime_vars: dict[str, Any] = {}
@@ -341,6 +406,11 @@ class AgentLoop:
         logger.info(
             "AgentLoop ready: model={} features=[{}]",
             self.model, ", ".join(_features) if _features else "none",
+        )
+        logger.info(
+            "Memory algorithm: {} (available: {})",
+            self.memory_algorithm_name,
+            ", ".join(_mem_registry.list()),
         )
 
     def _register_default_tools(self) -> None:
@@ -379,7 +449,16 @@ class AgentLoop:
             from nanobot.agent.tools.browser import BrowserFetchTool, BrowserSearchTool
             self.tools.register(BrowserSearchTool(timeout=self.browser_config.timeout))
             self.tools.register(BrowserFetchTool(timeout=self.browser_config.timeout))
+            # Stateful browser control tools (navigate / snapshot / execute JS)
+            _enable_control = getattr(self.browser_config, "enable_control", False)
+            if _enable_control:
+                if self._browser_manager is None:
+                    self._browser_manager = BrowserManager()
+                self.tools.register(BrowserNavigateTool(manager=self._browser_manager))
+                self.tools.register(BrowserSnapshotTool(manager=self._browser_manager))
+                self.tools.register(BrowserExecuteJSTool(manager=self._browser_manager))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
+        self.tools.register(AskUserTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(
@@ -410,7 +489,7 @@ class AgentLoop:
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("message", "spawn", "cron", "my"):
+        for name in ("message", "spawn", "cron", "my", "ask_user"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
@@ -477,10 +556,12 @@ class AgentLoop:
                 return
             self._set_runtime_checkpoint(session, payload)
 
-        async def _drain_pending(*, limit: int = _MAX_INJECTIONS_PER_TURN) -> list[dict[str, Any]]:
+        async def _drain_pending(*, limit: int | None = None) -> list[dict[str, Any]]:
             """Non-blocking drain of follow-up messages from the pending queue."""
             if pending_queue is None:
                 return []
+            if limit is None:
+                limit = self.max_injections_per_turn
             items: list[dict[str, Any]] = []
             while len(items) < limit:
                 try:
@@ -522,6 +603,8 @@ class AgentLoop:
             progress_callback=on_progress,
             checkpoint_callback=_checkpoint,
             injection_callback=_drain_pending,
+            max_injections_per_turn=self.max_injections_per_turn,
+            max_injection_cycles=self.max_injection_cycles,
         ))
         self._last_usage = result.usage
         if result.stop_reason == "max_iterations":
@@ -549,10 +632,11 @@ class AgentLoop:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
             except asyncio.TimeoutError:
-                self.auto_compact.check_expired(
-                    self._schedule_background,
-                    active_session_keys=self._pending_queues.keys(),
-                )
+                if self.auto_compact is not None:
+                    self.auto_compact.check_expired(
+                        self._schedule_background,
+                        active_session_keys=self._pending_queues.keys(),
+                    )
                 continue
             except asyncio.CancelledError:
                 # Preserve real task cancellation so shutdown can complete cleanly.
@@ -743,7 +827,10 @@ class AgentLoop:
             if self._restore_pending_user_turn(session):
                 self.sessions.save(session)
 
-            session, pending = self.auto_compact.prepare_session(session, key)
+            if self.auto_compact is not None:
+                session, pending = self.auto_compact.prepare_session(session, key)
+            else:
+                pending = None
 
             await self.consolidator.maybe_consolidate_by_tokens(session)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
@@ -794,7 +881,10 @@ class AgentLoop:
         if self._restore_pending_user_turn(session):
             self.sessions.save(session)
 
-        session, pending = self.auto_compact.prepare_session(session, key)
+        if self.auto_compact is not None:
+            session, pending = self.auto_compact.prepare_session(session, key)
+        else:
+            pending = None
 
         # Slash commands
         raw = msg.content.strip()
@@ -848,7 +938,10 @@ class AgentLoop:
 
         # Plan-and-Solve: now that _bus_progress is available, run the planner and
         # push progress + plan text to the channel before the main loop starts.
-        # Planning is skipped for very short/conversational messages.
+        # Planning is automatically skipped for simple/conversational messages
+        # via LLMComplexityEvaluator (Phase 1 regex pre-filter + Phase 2 LLM).
+        # Only tasks that are semantically complex (multi-step, code generation,
+        # analysis, etc.) will go through the planner.
         #
         # Closed-loop design:
         #   1. [Optional] Search-enhanced pre-planning (Module 8):
@@ -866,7 +959,13 @@ class AgentLoop:
         #   - process_direct (single CLI msg): on_progress=_cli_progress → printed directly
         #   - _dispatch (bus-driven: interactive/serve): on_progress=None → _bus_progress → bus
         _plan_progress = on_progress or _bus_progress
-        if self._planner is not None and isinstance(msg.content, str) and len(msg.content.strip()) > 5:
+        if (
+            self._planner is not None
+            and isinstance(msg.content, str)
+            and await self._complexity_evaluator.evaluate(
+                msg.content, channel=msg.channel, chat_id=msg.chat_id,
+            )
+        ):
             plan_text: str | None = None
             _search_info_cache: str | None = None  # cached purified info for GLOBAL_REPLAN reuse
             try:
@@ -1025,7 +1124,14 @@ class AgentLoop:
                 await _plan_progress("📋 **Revised Execution Plan**\n\n" + plan_text)
                 # Loop continues with the new plan
         else:
-            # No plan-and-solve: standard single-pass execution
+            # No plan-and-solve, or task is simple (auto-skipped by LLMComplexityEvaluator).
+            if self._planner is not None:
+                logger.info(
+                    "Plan-and-Solve: planning skipped — task classified as simple "
+                    "(session={}, {} chars): {}",
+                    key, len(msg.content.strip()), msg.content[:120],
+                )
+            # Standard single-pass execution
             final_content, _, all_msgs, stop_reason, had_injections = await self._run_agent_loop(
                 initial_messages,
                 on_progress=on_progress or _bus_progress,

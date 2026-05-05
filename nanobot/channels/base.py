@@ -192,3 +192,15 @@ class BaseChannel(ABC):
     def is_running(self) -> bool:
         """Check if the channel is running."""
         return self._running
+
+    async def notify_startup(self, message: str) -> None:
+        """Receive a system startup notification.
+
+        Override in subclasses to deliver startup messages to a configured
+        admin chat or notification channel.  The default implementation logs
+        the message at info level.
+
+        Args:
+            message: The formatted startup summary text.
+        """
+        logger.info("[{}] startup notification: {}", self.name, message)

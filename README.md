@@ -1,17 +1,17 @@
-# EasyClaw
+# UnionClaw
 
-EasyClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), with the following key features:
+UnionClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), with the following key features:
 
 - **Browser-Enhanced Planning** — Plans on any task even with a relatively weak model by leveraging real-time web search.
 - **DAG-Based Subagent Pools** — Directed Acyclic Graph scheduling with configurable recursion depths.
 - **ReAct Worker & Re-planner** — Self-improves the planner DAG based on environment feedback.
-- **Enhanced Memory Consolidation & Auto-Skill Learning** — Automatic skill distillation mechanism inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+- **[Enhanced Memory Consolidation & Auto-Skill Learning](docs/MEMORY.md)** — Pluggable memory algorithms (naive / Layerga / EMem / Nemori / ReMe) with automatic skill distillation inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
 ## Architecture
 
 ```
    ╔═════════════════════════════════════════════════════════════════╗
-   ║                    EasyClaw  Runtime Stack                      ║
+   ║                    UnionClaw  Runtime Stack                      ║
    ╠═════════════════════════════════════════════════════════════════╣
    │  ①  Public Support Layer                                        │
    │     Config Center · State Hub · Monitoring · Exception Guard    │
@@ -32,9 +32,14 @@ EasyClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), with
    ├─────────────────────────────────────────────────────────────────┤
    │  ⑥  Execution Unit Layer                                         │
    │     SubAgent Pool · Recursive Decomposition (Configurable)     │
+   ├─────────────────────────────────────────────────────────────────┤
+   │  ⑦  Memory Layer                                      ★ NEW    │
+   │     Consolidator (context pressure) · AutoCompact (session TTL) │
+   │     MemoryStore → SOUL.md · USER.md · MEMORY.md · history.jsonl│
+   │     ↑  Pluggable: naive / layerga / emem / nemori / remem       │
    ╠════════════════════ ▼ async · observes history ═══════════════════╣
-   │  ⑦  Skill Distillation Layer                          ★ NEW    │
-   │     Dream:  cron 2h · /dream  →  dreamed-* skills             │
+   │  ⑧  Skill Distillation Layer                          ★ NEW    │
+   │     Dream:  cron 2h · /dream  →  dreamed-* skills              │
    │     Hermes: ×10 calls · /skill-autogen  →  hermes-* skills    │
    │     ↑  Skills fed back into ① Tool Pool                        │
    ╚═════════════════════════════════════════════════════════════════╝
@@ -52,12 +57,56 @@ EasyClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), with
    nanobot gateway
    ```
 
-## EasyClaw Advantages
-![EasyClaw Advantages](docs/easyclaw_page.png)
+## UnionClaw Advantages
+
+UnionClaw extends [Nanobot](https://github.com/HKUDS/nanobot) with four architectural innovations that related frameworks lack or only partially implement. It also adopts [GenericAgent](https://github.com/Generative-AI-Research-Company/GenericAgent)'s L0-L4 layered memory as one of its pluggable backends (`layerga_memory`).
+
+| Capability | UnionClaw | Nanobot | GenericAgent | Hermes | OpenClaw |
+|---|---|---|---|---|---|
+| **Browser-Enhanced Planning** | ✓ Independent web-enhanced decision layer — search → purify → inject, fully automated closed loop | ✗ No planning layer; tool calls are single-step with no pre-planning enhancement | ✗ No web-enhanced planning layer; offline reasoning only | ✗ Manual search-tool calls only; no automatic search injection during planning | ✗ Pure offline planning; no internet augmentation |
+| **DAG Subagent Pools** | ✓ Built-in DAG scheduler in the execution engine; `max_subagent_depth` 0~N freely configurable | ✗ Pure single-agent; no scheduling layer, no DAG, no subagent pool | ✗ Single-agent execution; no DAG scheduler or parallel subagent pool | ✗ Single-agent sequential execution; no task decomposition, no concurrency | △ Basic task splitting, but no recursive depth config and no concurrent agent pool |
+| **ReAct Re-planner** | ✓ Independent closed-loop control — feedback → evaluate → replan, fully automatic | ✗ Single-step streaming; wrong = retry from scratch with no plan correction | ✗ No closed-loop replanning; fixed execution path | △ Dynamic in-step correction, but no DAG structure and no standardized replanning engine | ✗ Static one-time PTS plan; locked during execution with no feedback loop |
+| **Memory + Auto-Skill** | ✓ Dual-mode: Dream (cron scheduled) + Hermes-Autogen (tool-count triggered); skills auto-injected into tool pool | △ Dream-only weak mode — shell skills from batch summarization, no trajectory distillation | △ L0-L4 layered memory consolidation (constitution → insight → facts → SOP → archives); no Hermes-style trajectory distillation | ✓ Trajectory-driven real-time skill generation only; no Dream-style batch consolidation | ✗ No memory purification, no automatic skills; all skills must be hand-written |
+
+> ✓ = Full native implementation &nbsp; △ = Partial / limited &nbsp; ✗ = Not available
+
+## Memory
+
+UnionClaw ships with a **pluggable memory algorithm** system. Choose from five backends via the `memoryAlgorithm` config key:
+
+| Algorithm | Strategy | Best For |
+|-----------|----------|----------|
+| `naive_memory` | File-based (MEMORY.md + history.jsonl) | Simple setups, zero extra deps |
+| `emem_memory` | EDU extraction + embedding vectors | Structured fact & entity tracking |
+| `layerga_memory` | L0-L4 layered (constitution → insight → facts → SOP → archives) | Self-organising hierarchical knowledge |
+| `nemori_memory` | Episode + semantic self-organising | Long-term knowledge evolution |
+| `remem_memory` | ReMeLight engine adapter | External memory engine integration |
+
+See the **[Memory Documentation](docs/MEMORY.md)** for storage structures, configuration, and algorithm details.
+
+## Tools
+
+UnionClaw provides a set of **atomic tool primitives** that form the agent's interaction surface with the world — every capability is a self-contained `Tool` instance with typed parameters, validation, and safety constraints, all managed by a unified `ToolRegistry`.
+
+| Category | Tools | Gate |
+|----------|-------|------|
+| **Filesystem** | `read_file` · `write_file` · `edit_file` · `list_dir` | Always on |
+| **Search** | `glob` · `grep` | Always on |
+| **Notebook** | `notebook_edit` | Always on |
+| **Shell** | `exec` — sandboxed command execution | `tools.exec.enable` |
+| **Web** | `web_search` · `web_fetch` — 6 search backends | `tools.web.enable` |
+| **Browser** | `browser_search` · `browser_fetch` · `browser_navigate` · `browser_snapshot` · `browser_execute_js` | `tools.browser.enable` |
+| **Interaction** | `message` · `ask_user` · `spawn` · `cron` | Always on |
+| **Self** | `my` — runtime introspection & tuning | `tools.my.enable` |
+| **MCP** | Dynamic tools via Model Context Protocol | `mcpServers` config |
+
+> Each tool declares `read_only` (safe to parallelize) and `exclusive` (must run alone) flags. Parameter validation uses JSON Schema with automatic type casting. MCP tools are dynamically discovered and registered with the `mcp_<server>_` prefix.
+
+See the **[Tools Documentation](docs/TOOLS.md)** for full tool descriptions, parameters, safety classification, and registration flow.
 
 ## Skill Distillation
 
-EasyClaw supports two orthogonal skill distillation modes that can run independently or simultaneously.
+UnionClaw supports two orthogonal skill distillation modes that can run independently or simultaneously.
 
 ### Mode 1 — Dream  *(Memory Consolidation)*
 
@@ -102,6 +151,8 @@ Watches tool-call history and distills recurring patterns into reusable skills p
 
 ## Documentation
 
+- [Tools — Available Tools & Configuration](docs/TOOLS.md)
+- [Memory — Algorithms & Storage](docs/MEMORY.md)
 - [Nanobot Extended Docs](readme.nanobot.md)
 - [Upstream Nanobot](https://github.com/HKUDS/nanobot)
 
@@ -131,6 +182,12 @@ All keys below live under `agents.defaults` unless noted otherwise.
 | `tools.web.search.apiKey` | string | `""` | API key for providers that require one |
 | `tools.web.search.maxResults` | int | `5` | Hard cap on results returned by the search tool |
 | `tools.web.search.timeout` | int | `30` | Per-request timeout for the search tool (seconds) |
+
+### Memory Algorithm  *(Pluggable Backend)*
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `memoryAlgorithm` | string | `"naive_memory"` | Select the memory backend: `naive_memory`, `layerga_memory`, `emem_memory`, `nemori_memory`, or `remem_memory` |
 
 ### Skill Distillation — Dream  *(⑦ Mode 1)*
 

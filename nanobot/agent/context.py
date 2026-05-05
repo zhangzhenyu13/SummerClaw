@@ -7,7 +7,7 @@ from importlib.resources import files as pkg_files
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.memory import MemoryStore
+from nanobot.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.utils.helpers import build_assistant_message, current_time_str, detect_image_mime
 from nanobot.utils.prompt_templates import render_template
@@ -21,10 +21,10 @@ class ContextBuilder:
     _MAX_RECENT_HISTORY = 50
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
 
-    def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
+    def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None, memory_store: Any | None = None):
         self.workspace = workspace
         self.timezone = timezone
-        self.memory = MemoryStore(workspace)
+        self.memory = memory_store if memory_store is not None else MemoryStore(workspace)
         self.skills = SkillsLoader(workspace, disabled_skills=set(disabled_skills) if disabled_skills else None)
 
     def build_system_prompt(

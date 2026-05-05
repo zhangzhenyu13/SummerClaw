@@ -2,7 +2,7 @@
 name: web-search
 description: 通用网络搜索技能，支持多引擎搜索（百度、必应、DuckDuckGo），全部使用 Playwright 实现，无需API密钥即可获取实时信息
 version: 2.0.0
-author: easyclaw
+author: UnionClaw
 license: MIT
 tags:
   - search

@@ -60,6 +60,8 @@ class AzureOpenAIProvider(LLMProvider):
             default_headers={"x-session-affinity": uuid.uuid4().hex},
             max_retries=0,
         )
+        # Lazy-init sync client for embedding calls
+        self._sync_client: Any = None
 
     # ------------------------------------------------------------------
     # Helpers
@@ -181,3 +183,23 @@ class AzureOpenAIProvider(LLMProvider):
 
     def get_default_model(self) -> str:
         return self.default_model
+
+    def _get_sync_client(self) -> Any:
+        """Lazy-init a sync ``openai.OpenAI`` client for embedding calls."""
+        if self._sync_client is None:
+            from openai import OpenAI
+
+            self._sync_client = OpenAI(
+                api_key=self.api_key,
+                base_url=self._client.base_url,
+                max_retries=0,
+            )
+        return self._sync_client
+
+    def embed(self, texts: list[str], model: str) -> list[list[float]]:
+        """Generate embeddings via the Azure OpenAI embeddings endpoint."""
+        if not texts:
+            return []
+        client = self._get_sync_client()
+        response = client.embeddings.create(model=model, input=texts)
+        return [list(item.embedding) for item in response.data]

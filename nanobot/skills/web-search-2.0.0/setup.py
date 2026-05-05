@@ -19,12 +19,12 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="web-search-skill",
     version="2.0.0",
-    author="easyclaw",
+    author="UnionClaw",
     author_email="",
     description="Web Search Skill - Multi-engine web search without API keys",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/easyclaw/web-search-skill",
+    url="https://github.com/zhangzhenyu13/UnionClaw/web-search-skill",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -41,7 +41,7 @@ setup(
     install_requires=requirements,
     keywords="web search baidu bing duckduckgo internet",
     project_urls={
-        "Bug Reports": "https://github.com/easyclaw/web-search-skill/issues",
-        "Source": "https://github.com/easyclaw/web-search-skill",
+        "Bug Reports": "https://github.com/zhangzhenyu13/UnionClaw/web-search-skill/issues",
+        "Source": "https://github.com/zhangzhenyu13/UnionClaw/web-search-skill",
     },
 )

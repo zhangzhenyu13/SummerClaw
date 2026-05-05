@@ -786,3 +786,26 @@ class LLMProvider(ABC):
     def get_default_model(self) -> str:
         """Get the default model for this provider."""
         pass
+
+    # ------------------------------------------------------------------
+    # Embeddings
+    # ------------------------------------------------------------------
+
+    def embed(self, texts: list[str], model: str) -> list[list[float]]:
+        """Generate embeddings for the given texts.
+
+        OpenAI-compatible providers override this to call their
+        ``/embeddings`` endpoint using the same credentials as chat.
+        Providers that do not support embeddings (e.g. Anthropic)
+        raise :class:`NotImplementedError`.
+
+        Args:
+            texts: List of input strings to embed.
+            model: The embedding model name (e.g. ``"text-embedding-3-small"``).
+
+        Returns:
+            List of embedding vectors, each as ``list[float]``.
+        """
+        raise NotImplementedError(
+            f"Embeddings are not supported by the '{type(self).__name__}' provider."
+        )

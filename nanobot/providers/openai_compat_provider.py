@@ -188,6 +188,8 @@ class OpenAICompatProvider(LLMProvider):
             default_headers=default_headers,
             max_retries=0,
         )
+        # Lazy-init sync client for embedding calls (avoids async overhead)
+        self._sync_client: Any = None
 
     def _setup_env(self, api_key: str, api_base: str | None) -> None:
         """Set environment variables based on provider spec."""
@@ -1013,3 +1015,27 @@ class OpenAICompatProvider(LLMProvider):
 
     def get_default_model(self) -> str:
         return self.default_model
+
+    def _get_sync_client(self) -> Any:
+        """Lazy-init a sync ``openai.OpenAI`` client for embedding calls."""
+        if self._sync_client is None:
+            from openai import OpenAI
+
+            self._sync_client = OpenAI(
+                api_key=self.api_key or "no-key",
+                base_url=self._effective_base,
+                max_retries=0,
+            )
+        return self._sync_client
+
+    def embed(self, texts: list[str], model: str) -> list[list[float]]:
+        """Generate embeddings via the provider's OpenAI-compatible endpoint.
+
+        Uses a sync ``OpenAI`` client so that embedding calls can be made
+        without entering the async event loop.
+        """
+        if not texts:
+            return []
+        client = self._get_sync_client()
+        response = client.embeddings.create(model=model, input=texts)
+        return [list(item.embedding) for item in response.data]

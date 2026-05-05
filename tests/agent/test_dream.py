@@ -4,7 +4,7 @@ import pytest
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nanobot.agent.memory import Dream, MemoryStore
+from nanobot.memory import Dream, MemoryStore
 from nanobot.agent.runner import AgentRunResult
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.utils.gitstore import LineAge
