@@ -10,13 +10,16 @@ import asyncio
 import html
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from loguru import logger
 
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.schema import BooleanSchema, IntegerSchema, StringSchema, tool_parameters_schema
+
+if TYPE_CHECKING:
+    from nanobot.proxy.pool import ProxyPool
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -101,11 +104,35 @@ class BrowserSearchTool(Tool):
         "Prefer this over web_search when API keys are unavailable or content is geo-restricted."
     )
 
-    def __init__(self, timeout: int = 30000) -> None:
+    def __init__(self, timeout: int = 30000, proxy: dict | None = None, proxy_pool: ProxyPool | None = None) -> None:
         """Args:
             timeout: Playwright navigation timeout in milliseconds (default 30 000).
+            proxy:   Playwright proxy dict, e.g. ``{"server": "http://1.2.3.4:8080"}``.
+            proxy_pool: ProxyPool instance for automatic proxy rotation.
         """
         self.timeout = timeout
+        self.proxy = proxy
+        self._proxy_pool = proxy_pool
+
+    async def _get_proxy(self) -> dict | None:
+        """Resolve Playwright proxy: pool first, then static config."""
+        if self._proxy_pool is not None:
+            pw_proxy = await self._proxy_pool.get_playwright_proxy()
+            if pw_proxy:
+                return pw_proxy
+            if self._proxy_pool.is_fallback:
+                logger.debug("BrowserSearchTool: proxy pool exhausted, using direct connection")
+        return self.proxy
+
+    def _on_proxy_success(self, pw_proxy: dict | None) -> None:
+        """Notify pool of successful proxy use."""
+        if self._proxy_pool is not None and pw_proxy:
+            self._proxy_pool.mark_good(pw_proxy.get("server", ""))
+
+    def _on_proxy_error(self, pw_proxy: dict | None, error: Exception) -> None:
+        """Notify pool of failed proxy use."""
+        if self._proxy_pool is not None and pw_proxy:
+            self._proxy_pool.mark_bad(pw_proxy.get("server", ""))
 
     @property
     def read_only(self) -> bool:
@@ -137,12 +164,14 @@ class BrowserSearchTool(Tool):
             )
 
         try:
+            pw_proxy = await self._get_proxy()
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 try:
                     context = await browser.new_context(
                         user_agent=_USER_AGENT,
                         viewport={"width": 1920, "height": 1080},
+                        proxy=pw_proxy,
                     )
                     page = await context.new_page()
                     if eng == "baidu":
@@ -305,13 +334,27 @@ class BrowserFetchTool(Tool):
         "Use browser_search to discover relevant URLs first."
     )
 
-    def __init__(self, max_chars: int = 50000, timeout: int = 30000) -> None:
+    def __init__(self, max_chars: int = 50000, timeout: int = 30000, proxy: dict | None = None, proxy_pool: ProxyPool | None = None) -> None:
         """Args:
             max_chars: Hard cap on returned text length.
             timeout:   Playwright navigation timeout in milliseconds.
+            proxy:     Playwright proxy dict, e.g. ``{"server": "http://1.2.3.4:8080"}``.
+            proxy_pool: ProxyPool instance for automatic proxy rotation.
         """
         self.max_chars = max_chars
         self.timeout = timeout
+        self.proxy = proxy
+        self._proxy_pool = proxy_pool
+
+    async def _get_proxy(self) -> dict | None:
+        """Resolve Playwright proxy: pool first, then static config."""
+        if self._proxy_pool is not None:
+            pw_proxy = await self._proxy_pool.get_playwright_proxy()
+            if pw_proxy:
+                return pw_proxy
+            if self._proxy_pool.is_fallback:
+                logger.debug("BrowserFetchTool: proxy pool exhausted, using direct connection")
+        return self.proxy
 
     @property
     def read_only(self) -> bool:
@@ -408,10 +451,11 @@ class BrowserFetchTool(Tool):
             )
 
         try:
+            pw_proxy = await self._get_proxy()
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 try:
-                    context = await browser.new_context(user_agent=_USER_AGENT)
+                    context = await browser.new_context(user_agent=_USER_AGENT, proxy=pw_proxy)
                     page = await context.new_page()
                     await page.goto(url, wait_until="networkidle", timeout=self.timeout)
                     title = await page.title()

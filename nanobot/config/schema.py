@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from nanobot.cron.types import CronSchedule
 
@@ -298,11 +298,74 @@ class BrowserToolsConfig(Base):
             "accessibility-tree snapshots. Requires ``enable: true`` as well."
         ),
     )
+    proxy: str | None = None  # HTTP/SOCKS5 proxy URL for Playwright (ignored when proxy_pool is enabled)
     timeout: int = Field(
         default=30000,
         ge=1000,
         le=120000,
         description="Playwright navigation timeout in milliseconds (default 30 000).",
+    )
+
+
+class ProxyPoolConfig(Base):
+    """IP proxy pool configuration.
+
+    When enabled, maintains a pool of usable proxy servers with periodic
+    health checks and automatic collection from public sources.  Each
+    web/browser request picks a random proxy from the pool to avoid
+    rate-limiting and IP bans.
+    """
+
+    enabled: bool = False
+    min_pool_size: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Minimum number of available proxies before triggering collection",
+    )
+    max_pool_size: int = Field(
+        default=20,
+        ge=5,
+        le=200,
+        description="Maximum number of proxies to keep in the pool",
+    )
+    health_check_interval: int = Field(
+        default=300,
+        ge=30,
+        description="Seconds between periodic health checks of all proxies (0 = disabled)",
+    )
+    health_check_url: str = Field(
+        default="https://httpbin.org/ip",
+        description="URL used to validate whether a proxy is working",
+    )
+    proxy_test_timeout: int = Field(
+        default=10,
+        ge=3,
+        le=30,
+        description="Timeout in seconds for proxy validation requests",
+    )
+    max_fail_count: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Consecutive failures before marking a proxy as dead",
+    )
+    collect_interval: int = Field(
+        default=600,
+        ge=60,
+        description="Seconds between pool size checks and auto-collection triggers",
+    )
+    initial_proxies: list[str] = Field(
+        default_factory=list,
+        description="Proxy URLs to load at startup (e.g. ['http://1.2.3.4:8080', 'socks5://...'])",
+    )
+    proxy_cache_enabled: bool = Field(
+        default=True,
+        description="Persist valid proxies to disk so the pool survives restarts",
+    )
+    proxy_cache_path: str = Field(
+        default="",
+        description="Path to the proxy cache JSON file (default: ~/.nanobot/proxy_cache.json)",
     )
 
 
@@ -364,6 +427,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    proxy_pool: ProxyPoolConfig = Field(default_factory=ProxyPoolConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @property
@@ -466,4 +530,10 @@ class Config(BaseSettings):
                 return spec.default_api_base
         return None
 
-    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")
+    model_config = SettingsConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="allow",
+        env_prefix="NANOBOT_",
+        env_nested_delimiter="__",
+    )

@@ -94,6 +94,7 @@ class Nanobot:
             embedding_config=defaults.embedding,
             max_injections_per_turn=defaults.injection.max_per_turn,
             max_injection_cycles=defaults.injection.max_cycles,
+            proxy_pool_config=config.proxy_pool,
         )
         return cls(loop)
 

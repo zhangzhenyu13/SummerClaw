@@ -19,6 +19,7 @@ from nanobot.utils.helpers import build_image_content_blocks
 
 if TYPE_CHECKING:
     from nanobot.config.schema import WebSearchConfig
+    from nanobot.proxy.pool import ProxyPool
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -90,11 +91,32 @@ class WebSearchTool(Tool):
         "Use web_fetch to read a specific page in full."
     )
 
-    def __init__(self, config: WebSearchConfig | None = None, proxy: str | None = None):
+    def __init__(self, config: WebSearchConfig | None = None, proxy: str | None = None, proxy_pool: ProxyPool | None = None):
         from nanobot.config.schema import WebSearchConfig
 
         self.config = config if config is not None else WebSearchConfig()
         self.proxy = proxy
+        self._proxy_pool = proxy_pool
+
+    async def _get_proxy(self) -> str | None:
+        """Resolve the effective proxy: pool first, then static config."""
+        if self._proxy_pool is not None:
+            pool_proxy = await self._proxy_pool.get_proxy()
+            if pool_proxy:
+                return pool_proxy
+            if self._proxy_pool.is_fallback:
+                logger.debug("WebSearchTool: proxy pool exhausted, using direct connection")
+        return self.proxy
+
+    def _on_proxy_success(self, proxy_url: str | None) -> None:
+        """Notify pool of a successful proxy use."""
+        if self._proxy_pool is not None and proxy_url:
+            self._proxy_pool.mark_good(proxy_url)
+
+    def _on_proxy_error(self, proxy_url: str | None, error: Exception) -> None:
+        """Notify pool of a failed proxy use."""
+        if self._proxy_pool is not None and proxy_url:
+            self._proxy_pool.mark_bad(proxy_url)
 
     def _effective_provider(self) -> str:
         """Resolve the backend that execute() will actually use."""
@@ -151,8 +173,9 @@ class WebSearchTool(Tool):
         if not api_key:
             logger.warning("BRAVE_API_KEY not set, falling back to DuckDuckGo")
             return await self._search_duckduckgo(query, n)
+        proxy_url = await self._get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=self.proxy) as client:
+            async with httpx.AsyncClient(proxy=proxy_url) as client:
                 r = await client.get(
                     "https://api.search.brave.com/res/v1/web/search",
                     params={"q": query, "count": n},
@@ -164,8 +187,10 @@ class WebSearchTool(Tool):
                 {"title": x.get("title", ""), "url": x.get("url", ""), "content": x.get("description", "")}
                 for x in r.json().get("web", {}).get("results", [])
             ]
+            self._on_proxy_success(proxy_url)
             return _format_results(query, items, n)
         except Exception as e:
+            self._on_proxy_error(proxy_url, e)
             return f"Error: {e}"
 
     async def _search_tavily(self, query: str, n: int) -> str:
@@ -173,8 +198,9 @@ class WebSearchTool(Tool):
         if not api_key:
             logger.warning("TAVILY_API_KEY not set, falling back to DuckDuckGo")
             return await self._search_duckduckgo(query, n)
+        proxy_url = await self._get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=self.proxy) as client:
+            async with httpx.AsyncClient(proxy=proxy_url) as client:
                 r = await client.post(
                     "https://api.tavily.com/search",
                     headers={"Authorization": f"Bearer {api_key}"},
@@ -182,8 +208,10 @@ class WebSearchTool(Tool):
                     timeout=15.0,
                 )
                 r.raise_for_status()
+            self._on_proxy_success(proxy_url)
             return _format_results(query, r.json().get("results", []), n)
         except Exception as e:
+            self._on_proxy_error(proxy_url, e)
             return f"Error: {e}"
 
     async def _search_searxng(self, query: str, n: int) -> str:
@@ -195,8 +223,9 @@ class WebSearchTool(Tool):
         is_valid, error_msg = _validate_url(endpoint)
         if not is_valid:
             return f"Error: invalid SearXNG URL: {error_msg}"
+        proxy_url = await self._get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=self.proxy) as client:
+            async with httpx.AsyncClient(proxy=proxy_url) as client:
                 r = await client.get(
                     endpoint,
                     params={"q": query, "format": "json"},
@@ -204,8 +233,10 @@ class WebSearchTool(Tool):
                     timeout=10.0,
                 )
                 r.raise_for_status()
+            self._on_proxy_success(proxy_url)
             return _format_results(query, r.json().get("results", []), n)
         except Exception as e:
+            self._on_proxy_error(proxy_url, e)
             return f"Error: {e}"
 
     async def _search_jina(self, query: str, n: int) -> str:
@@ -213,10 +244,11 @@ class WebSearchTool(Tool):
         if not api_key:
             logger.warning("JINA_API_KEY not set, falling back to DuckDuckGo")
             return await self._search_duckduckgo(query, n)
+        proxy_url = await self._get_proxy()
         try:
             headers = {"Accept": "application/json", "Authorization": f"Bearer {api_key}"}
             encoded_query = quote(query, safe="")
-            async with httpx.AsyncClient(proxy=self.proxy) as client:
+            async with httpx.AsyncClient(proxy=proxy_url) as client:
                 r = await client.get(
                     f"https://s.jina.ai/{encoded_query}",
                     headers=headers,
@@ -228,8 +260,10 @@ class WebSearchTool(Tool):
                 {"title": d.get("title", ""), "url": d.get("url", ""), "content": d.get("content", "")[:500]}
                 for d in data
             ]
+            self._on_proxy_success(proxy_url)
             return _format_results(query, items, n)
         except Exception as e:
+            self._on_proxy_error(proxy_url, e)
             logger.warning("Jina search failed ({}), falling back to DuckDuckGo", e)
             return await self._search_duckduckgo(query, n)
 
@@ -238,8 +272,9 @@ class WebSearchTool(Tool):
         if not api_key:
             logger.warning("KAGI_API_KEY not set, falling back to DuckDuckGo")
             return await self._search_duckduckgo(query, n)
+        proxy_url = await self._get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=self.proxy) as client:
+            async with httpx.AsyncClient(proxy=proxy_url) as client:
                 r = await client.get(
                     "https://kagi.com/api/v0/search",
                     params={"q": query, "limit": n},
@@ -252,8 +287,10 @@ class WebSearchTool(Tool):
                 {"title": d.get("title", ""), "url": d.get("url", ""), "content": d.get("snippet", "")}
                 for d in r.json().get("data", []) if d.get("t") == 0
             ]
+            self._on_proxy_success(proxy_url)
             return _format_results(query, items, n)
         except Exception as e:
+            self._on_proxy_error(proxy_url, e)
             return f"Error: {e}"
 
     async def _search_duckduckgo(self, query: str, n: int) -> str:
@@ -301,9 +338,30 @@ class WebFetchTool(Tool):
         "Works for most web pages and docs; may fail on login-walled or JS-heavy sites."
     )
 
-    def __init__(self, max_chars: int = 50000, proxy: str | None = None):
+    def __init__(self, max_chars: int = 50000, proxy: str | None = None, proxy_pool: ProxyPool | None = None):
         self.max_chars = max_chars
         self.proxy = proxy
+        self._proxy_pool = proxy_pool
+
+    async def _get_proxy(self) -> str | None:
+        """Resolve the effective proxy: pool first, then static config."""
+        if self._proxy_pool is not None:
+            pool_proxy = await self._proxy_pool.get_proxy()
+            if pool_proxy:
+                return pool_proxy
+            if self._proxy_pool.is_fallback:
+                logger.debug("WebFetchTool: proxy pool exhausted, using direct connection")
+        return self.proxy
+
+    def _on_proxy_success(self, proxy_url: str | None) -> None:
+        """Notify pool of a successful proxy use."""
+        if self._proxy_pool is not None and proxy_url:
+            self._proxy_pool.mark_good(proxy_url)
+
+    def _on_proxy_error(self, proxy_url: str | None, error: Exception) -> None:
+        """Notify pool of a failed proxy use."""
+        if self._proxy_pool is not None and proxy_url:
+            self._proxy_pool.mark_bad(proxy_url)
 
     @property
     def read_only(self) -> bool:
@@ -316,8 +374,9 @@ class WebFetchTool(Tool):
             return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
 
         # Detect and fetch images directly to avoid Jina's textual image captioning
+        proxy_url = await self._get_proxy()
         try:
-            async with httpx.AsyncClient(proxy=self.proxy, follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=15.0) as client:
+            async with httpx.AsyncClient(proxy=proxy_url, follow_redirects=True, max_redirects=MAX_REDIRECTS, timeout=15.0) as client:
                 async with client.stream("GET", url, headers={"User-Agent": USER_AGENT}) as r:
                     from nanobot.security.network import validate_resolved_url
 
@@ -340,12 +399,13 @@ class WebFetchTool(Tool):
 
     async def _fetch_jina(self, url: str, max_chars: int) -> str | None:
         """Try fetching via Jina Reader API. Returns None on failure."""
+        proxy_url = await self._get_proxy()
         try:
             headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
             jina_key = os.environ.get("JINA_API_KEY", "")
             if jina_key:
                 headers["Authorization"] = f"Bearer {jina_key}"
-            async with httpx.AsyncClient(proxy=self.proxy, timeout=20.0) as client:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=20.0) as client:
                 r = await client.get(f"https://r.jina.ai/{url}", headers=headers)
                 if r.status_code == 429:
                     logger.debug("Jina Reader rate limited, falling back to readability")
@@ -365,12 +425,14 @@ class WebFetchTool(Tool):
                 text = text[:max_chars]
             text = f"{_UNTRUSTED_BANNER}\n\n{text}"
 
+            self._on_proxy_success(proxy_url)
             return json.dumps({
                 "url": url, "finalUrl": data.get("url", url), "status": r.status_code,
                 "extractor": "jina", "truncated": truncated, "length": len(text),
                 "untrusted": True, "text": text,
             }, ensure_ascii=False)
         except Exception as e:
+            self._on_proxy_error(proxy_url, e)
             logger.debug("Jina Reader failed for {}, falling back to readability: {}", url, e)
             return None
 
@@ -378,12 +440,13 @@ class WebFetchTool(Tool):
         """Local fallback using readability-lxml."""
         from readability import Document
 
+        proxy_url = await self._get_proxy()
         try:
             async with httpx.AsyncClient(
                 follow_redirects=True,
                 max_redirects=MAX_REDIRECTS,
                 timeout=30.0,
-                proxy=self.proxy,
+                proxy=proxy_url,
             ) as client:
                 r = await client.get(url, headers={"User-Agent": USER_AGENT})
                 r.raise_for_status()
@@ -412,15 +475,18 @@ class WebFetchTool(Tool):
                 text = text[:max_chars]
             text = f"{_UNTRUSTED_BANNER}\n\n{text}"
 
+            self._on_proxy_success(proxy_url)
             return json.dumps({
                 "url": url, "finalUrl": str(r.url), "status": r.status_code,
                 "extractor": extractor, "truncated": truncated, "length": len(text),
                 "untrusted": True, "text": text,
             }, ensure_ascii=False)
         except httpx.ProxyError as e:
+            self._on_proxy_error(proxy_url, e)
             logger.error("WebFetch proxy error for {}: {}", url, e)
             return json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False)
         except Exception as e:
+            self._on_proxy_error(proxy_url, e)
             logger.error("WebFetch error for {}: {}", url, e)
             return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
 

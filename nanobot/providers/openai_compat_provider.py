@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import json_repair
+from loguru import logger
 
 if os.environ.get("LANGFUSE_SECRET_KEY") and importlib.util.find_spec("langfuse"):
     from langfuse.openai import AsyncOpenAI
@@ -1028,14 +1029,97 @@ class OpenAICompatProvider(LLMProvider):
             )
         return self._sync_client
 
-    def embed(self, texts: list[str], model: str) -> list[list[float]]:
-        """Generate embeddings via the provider's OpenAI-compatible endpoint.
+    # ------------------------------------------------------------------
+    # DashScope multimodal embedding models — native API routing
+    # ------------------------------------------------------------------
 
-        Uses a sync ``OpenAI`` client so that embedding calls can be made
-        without entering the async event loop.
+    _DASHSCOPE_MULTIMODAL_EMBED_PREFIXES: tuple[str, ...] = (
+        "tongyi-embedding-vision",
+        "qwen3-vl-embedding",
+        "qwen2.5-vl-embedding",
+        "multimodal-embedding",
+    )
+
+    @classmethod
+    def _is_dashscope_multimodal_model(cls, model: str) -> bool:
+        """Return True if *model* is a DashScope multimodal embedding model.
+
+        These models require DashScope's native multimodal-embedding API
+        because the OpenAI-compatible ``/embeddings`` endpoint only serves
+        the ``text-embedding-v*`` family.
+        """
+        lowered = model.lower()
+        return any(lowered.startswith(p) for p in cls._DASHSCOPE_MULTIMODAL_EMBED_PREFIXES)
+
+    def _dashscope_multimodal_embed(self, texts: list[str], model: str) -> list[list[float]]:
+        """Call DashScope native multimodal-embedding API for text inputs.
+
+        Endpoint: ``POST /api/v1/services/embeddings/multimodal-embedding/multimodal-embedding``
+        """
+        import requests as _requests
+
+        url = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        results: list[list[float]] = []
+        batch_size = 10  # safe batch size for multimodal API
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            payload: dict[str, Any] = {
+                "model": model,
+                "input": {"contents": [{"text": t} for t in batch]},
+            }
+            try:
+                resp = _requests.post(url, json=payload, headers=headers, timeout=60)
+                resp.raise_for_status()
+                data: dict[str, Any] = resp.json()
+                embeddings = data.get("output", {}).get("embeddings", [])
+                for emb in embeddings:
+                    results.append(list(emb.get("embedding", [])))
+            except Exception as e:
+                logger.warning(
+                    "DashScope multimodal embed failed for model %s (batch %d-%d): %s",
+                    model, i, min(i + batch_size, len(texts)), e,
+                )
+                # Fall back to single-text requests for this batch
+                for text in batch:
+                    try:
+                        single_payload = {
+                            "model": model,
+                            "input": {"contents": [{"text": text}]},
+                        }
+                        resp = _requests.post(url, json=single_payload, headers=headers, timeout=30)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        single_emb = data.get("output", {}).get("embeddings", [])
+                        if single_emb:
+                            results.append(list(single_emb[0].get("embedding", [])))
+                    except Exception as e2:
+                        logger.warning("DashScope multimodal single embed failed: %s", e2)
+
+        return results
+
+    def embed(self, texts: list[str], model: str) -> list[list[float]]:
+        """Generate embeddings via the provider's endpoint.
+
+        For DashScope multimodal models (``tongyi-embedding-vision-*``,
+        ``qwen*-vl-embedding``, ``multimodal-embedding-*``) the native
+        ``/multimodal-embedding`` API is used because the OpenAI-compatible
+        ``/embeddings`` endpoint does not serve these models.
+
+        All other models (including DashScope ``text-embedding-v*``) use
+        the standard OpenAI-compatible ``/embeddings`` endpoint.
         """
         if not texts:
             return []
+
+        if self._spec and self._spec.name == "dashscope" and self._is_dashscope_multimodal_model(model):
+            return self._dashscope_multimodal_embed(texts, model)
+
         client = self._get_sync_client()
         response = client.embeddings.create(model=model, input=texts)
         return [list(item.embedding) for item in response.data]

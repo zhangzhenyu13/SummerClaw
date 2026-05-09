@@ -599,6 +599,8 @@ def serve(
         search_enhanced_planning_config=runtime_config.agents.defaults.search_enhanced_planning,
         tools_config=runtime_config.tools,
         skill_autogen_config=runtime_config.agents.defaults.skill_autogen,
+        memory_algorithm_name=runtime_config.agents.defaults.memory_algorithm,
+        embedding_config=runtime_config.agents.defaults.embedding,
         max_injections_per_turn=runtime_config.agents.defaults.injection.max_per_turn,
         max_injection_cycles=runtime_config.agents.defaults.injection.max_cycles,
     )
@@ -702,6 +704,7 @@ def gateway(
         tools_config=config.tools,
         skill_autogen_config=config.agents.defaults.skill_autogen,
         memory_algorithm_name=config.agents.defaults.memory_algorithm,
+        embedding_config=config.agents.defaults.embedding,
         max_injections_per_turn=config.agents.defaults.injection.max_per_turn,
         max_injection_cycles=config.agents.defaults.injection.max_cycles,
     )
@@ -1083,6 +1086,7 @@ def agent(
         tools_config=config.tools,
         skill_autogen_config=config.agents.defaults.skill_autogen,
         memory_algorithm_name=config.agents.defaults.memory_algorithm,
+        embedding_config=config.agents.defaults.embedding,
         max_injections_per_turn=config.agents.defaults.injection.max_per_turn,
         max_injection_cycles=config.agents.defaults.injection.max_cycles,
     )

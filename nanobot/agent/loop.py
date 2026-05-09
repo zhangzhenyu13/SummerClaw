@@ -49,8 +49,9 @@ from nanobot.utils.helpers import truncate_text as truncate_text_fn
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, SkillAutogenConfig, ToolsConfig, WebToolsConfig
+    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, ProxyPoolConfig, SkillAutogenConfig, ToolsConfig, WebToolsConfig
     from nanobot.cron.service import CronService
+    from nanobot.proxy.pool import ProxyPool
 
 
 UNIFIED_SESSION_KEY = "unified:default"
@@ -177,8 +178,9 @@ class AgentLoop:
         embedding_config: Any = None,
         max_injections_per_turn: int = _MAX_INJECTIONS_PER_TURN,
         max_injection_cycles: int = 5,
+        proxy_pool_config: "ProxyPoolConfig | None" = None,
     ):
-        from nanobot.config.schema import BrowserToolsConfig, ExecToolConfig, ToolsConfig, WebToolsConfig
+        from nanobot.config.schema import BrowserToolsConfig, ExecToolConfig, ProxyPoolConfig, ToolsConfig, WebToolsConfig
 
         _tc = tools_config or ToolsConfig()
         defaults = AgentDefaults()
@@ -209,6 +211,12 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.browser_config: BrowserToolsConfig = _tc.browser
         self._browser_manager: BrowserManager | None = None
+        self._proxy_pool_config = proxy_pool_config
+        self._proxy_pool: ProxyPool | None = None
+        # Create ProxyPool instance early so tools can reference it
+        if self._proxy_pool_config is not None and self._proxy_pool_config.enabled:
+            from nanobot.proxy.pool import ProxyPool
+            self._proxy_pool = ProxyPool(self._proxy_pool_config)
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self._start_time = time.time()
@@ -223,6 +231,10 @@ class AgentLoop:
         from nanobot.memory.naive_memory import NaiveMemoryAlgorithm
         from nanobot.memory.nemori_memory import NemoriMemoryAlgorithm
         from nanobot.memory.layerga_memory import LayergaMemoryAlgorithm
+        from nanobot.memory.mem0v3_memory import Mem0V3MemoryAlgorithm
+        from nanobot.memory.supermemory_memory import SupermemoryMemoryAlgorithm
+        from nanobot.memory.hindsight_memory import HindsightMemoryAlgorithm
+        from nanobot.memory.mastra_om_memory import MastraOMMemoryAlgorithm
 
         _REME_INSTALL_MSG = (
             "ReMe memory algorithm 'remem_memory' is configured but the 'reme' "
@@ -243,6 +255,10 @@ class AgentLoop:
         _mem_registry.register(NaiveMemoryAlgorithm())
         _mem_registry.register(NemoriMemoryAlgorithm())
         _mem_registry.register(LayergaMemoryAlgorithm())
+        _mem_registry.register(Mem0V3MemoryAlgorithm())
+        _mem_registry.register(SupermemoryMemoryAlgorithm())
+        _mem_registry.register(HindsightMemoryAlgorithm())
+        _mem_registry.register(MastraOMMemoryAlgorithm())
         if _HAS_REME:
             from nanobot.memory.remem_memory import ReMeMemoryAlgorithm
 
@@ -292,6 +308,7 @@ class AgentLoop:
             disabled_skills=disabled_skills,
             max_subagent_depth=max_subagent_depth,
             task_registry=self._task_registry,
+            proxy_pool=self._proxy_pool,
         )
         # Plan-and-Solve: create a TaskPlanner when enabled
         self._plan_and_solve = plan_and_solve
@@ -345,6 +362,7 @@ class AgentLoop:
                 max_purified_chars=search_enhanced_planning_config.max_purified_chars,
                 search_on_replan=search_enhanced_planning_config.search_on_replan,
                 web_search_backend=search_enhanced_planning_config.web_search_backend,
+                reasoning_effort=provider.generation.reasoning_effort,
             )
         self._unified_session = unified_session
         self._running = False
@@ -413,6 +431,13 @@ class AgentLoop:
             ", ".join(_mem_registry.list()),
         )
 
+    @staticmethod
+    def _make_browser_proxy(proxy_url: str | None) -> dict | None:
+        """Convert a proxy URL string to a Playwright proxy dict."""
+        if proxy_url:
+            return {"server": proxy_url}
+        return None
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         allowed_dir = (
@@ -442,18 +467,19 @@ class AgentLoop:
             )
         if self.web_config.enable:
             self.tools.register(
-                WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy)
+                WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy, proxy_pool=self._proxy_pool)
             )
-            self.tools.register(WebFetchTool(proxy=self.web_config.proxy))
+            self.tools.register(WebFetchTool(proxy=self.web_config.proxy, proxy_pool=self._proxy_pool))
         if self.browser_config.enable:
             from nanobot.agent.tools.browser import BrowserFetchTool, BrowserSearchTool
-            self.tools.register(BrowserSearchTool(timeout=self.browser_config.timeout))
-            self.tools.register(BrowserFetchTool(timeout=self.browser_config.timeout))
+            browser_proxy = self._make_browser_proxy(self.browser_config.proxy)
+            self.tools.register(BrowserSearchTool(timeout=self.browser_config.timeout, proxy=browser_proxy, proxy_pool=self._proxy_pool))
+            self.tools.register(BrowserFetchTool(timeout=self.browser_config.timeout, proxy=browser_proxy, proxy_pool=self._proxy_pool))
             # Stateful browser control tools (navigate / snapshot / execute JS)
             _enable_control = getattr(self.browser_config, "enable_control", False)
             if _enable_control:
                 if self._browser_manager is None:
-                    self._browser_manager = BrowserManager()
+                    self._browser_manager = BrowserManager(proxy=browser_proxy, proxy_pool=self._proxy_pool)
                 self.tools.register(BrowserNavigateTool(manager=self._browser_manager))
                 self.tools.register(BrowserSnapshotTool(manager=self._browser_manager))
                 self.tools.register(BrowserExecuteJSTool(manager=self._browser_manager))
@@ -622,6 +648,9 @@ class AgentLoop:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         await self._connect_mcp()
+        # Start the proxy pool if enabled
+        if self._proxy_pool is not None:
+            await self._proxy_pool.start()
         logger.info("Agent loop started")
         # Notify channels about tasks that were interrupted when the process
         # last exited.  A small delay lets channels finish their startup
@@ -802,6 +831,9 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
+        # Schedule proxy pool shutdown
+        if self._proxy_pool is not None:
+            self._schedule_background(self._proxy_pool.stop())
         logger.info("Agent loop stopping")
 
     async def _process_message(

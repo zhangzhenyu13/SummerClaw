@@ -13,7 +13,8 @@
       },
       "max_subagent_depth": 2,
       "max_replan_iterations": 2,
-      "model": "your model here",
+      "model": "qwen3.6-plus",
+      "_model_note": "← Replace with your actual model name (e.g. gpt-4o, claude-sonnet-4, deepseek-v3, gemini-2.5-pro)",
       "provider": "auto",
       "maxTokens": 65536,
       "contextWindowTokens": 1000000,
@@ -22,7 +23,8 @@
       "maxToolIterations": 200,
       "maxToolResultChars": 16000,
       "providerRetryMode": "standard",
-      "reasoningEffort": null,
+      "reasoningEffort": "medium",
+      "_reasoningEffort_note": "← null=off, or low/medium/high/adaptive. Enables model thinking (Claude Extended Thinking, o-series reasoning). Used by search-decision & subagents.",
       "timezone": "UTC",
       "unifiedSession": false,
       "disabledSkills": [],
@@ -402,6 +404,20 @@
       "keepRecentMessages": 8
     }
   },
+  "proxyPool": {
+    "enabled": false,
+    "_comment": "--- IP Proxy Pool --- When enabled, maintains a pool of rotating proxy IPs to avoid rate-limiting.",
+    "minPoolSize": 5,
+    "maxPoolSize": 20,
+    "healthCheckInterval": 300,
+    "healthCheckUrl": "https://httpbin.org/ip",
+    "proxyTestTimeout": 10,
+    "maxFailCount": 3,
+    "collectInterval": 600,
+    "initialProxies": [],
+    "proxyCacheEnabled": true,
+    "proxyCachePath": ""
+  },
   "tools": {
     "web": {
       "enable": false,
@@ -417,6 +433,7 @@
     "browser": {
       "enable": false,
       "enable_control": false,
+      "proxy": null,
       "timeout": 30000
     },
     "exec": {

@@ -16,13 +16,16 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.schema import BooleanSchema, IntegerSchema, StringSchema, tool_parameters_schema
 from nanobot.utils.helpers import build_image_content_blocks
+
+if TYPE_CHECKING:
+    from nanobot.proxy.pool import ProxyPool
 
 # ---------------------------------------------------------------------------
 # Shared constants
@@ -53,7 +56,7 @@ class BrowserManager:
     *idle_timeout* seconds of inactivity.
     """
 
-    def __init__(self, idle_timeout: int = _DEFAULT_IDLE_TIMEOUT) -> None:
+    def __init__(self, idle_timeout: int = _DEFAULT_IDLE_TIMEOUT, proxy: dict | None = None, proxy_pool: ProxyPool | None = None) -> None:
         self._idle_timeout = idle_timeout
         self._playwright: Any = None
         self._browser: Any = None
@@ -62,6 +65,18 @@ class BrowserManager:
         self._active_page_id: str | None = None
         self._last_used: float = 0.0
         self._lock = asyncio.Lock()
+        self.proxy = proxy
+        self._proxy_pool = proxy_pool
+
+    async def _get_proxy(self) -> dict | None:
+        """Resolve Playwright proxy: pool first, then static config."""
+        if self._proxy_pool is not None:
+            pw_proxy = await self._proxy_pool.get_playwright_proxy()
+            if pw_proxy:
+                return pw_proxy
+            if self._proxy_pool.is_fallback:
+                logger.debug("BrowserManager: proxy pool exhausted, using direct connection")
+        return self.proxy
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -100,9 +115,11 @@ class BrowserManager:
                     "--disable-blink-features=AutomationControlled",
                 ],
             )
+            pw_proxy = await self._get_proxy()
             self._context = await self._browser.new_context(
                 user_agent=_USER_AGENT,
                 viewport={"width": 1280, "height": 720},
+                proxy=pw_proxy,
             )
             # Create a default blank page
             page = await self._context.new_page()

@@ -132,4 +132,10 @@ def _migrate_config(data: dict) -> dict:
         else:
             tools.pop("mySet", None)
 
+    # Move tools.proxyPool → proxyPool (top-level).
+    # proxyPool is infrastructure, not a tool; it belongs at the root level
+    # alongside agents / channels / providers / tools.
+    if "proxyPool" in tools and "proxyPool" not in data:
+        data["proxyPool"] = tools.pop("proxyPool")
+
     return data

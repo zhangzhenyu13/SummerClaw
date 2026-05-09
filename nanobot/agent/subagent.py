@@ -1,12 +1,14 @@
 """Subagent manager for background task execution."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -24,6 +26,9 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import BrowserToolsConfig, ExecToolConfig, WebToolsConfig
 from nanobot.providers.base import LLMProvider
+
+if TYPE_CHECKING:
+    from nanobot.proxy.pool import ProxyPool
 
 
 _SUBAGENT_MAX_ITERATIONS = 15
@@ -88,6 +93,7 @@ class SubagentManager:
         disabled_skills: list[str] | None = None,
         max_subagent_depth: int = 0,
         task_registry: TaskRegistry | None = None,
+        proxy_pool: ProxyPool | None = None,
     ):
         self.provider = provider
         self.workspace = workspace
@@ -102,6 +108,7 @@ class SubagentManager:
         self.max_subagent_depth = max_subagent_depth
         self.task_registry = task_registry
         self.runner = AgentRunner(provider)
+        self._proxy_pool = proxy_pool
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_statuses: dict[str, SubagentStatus] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
@@ -219,12 +226,13 @@ class SubagentManager:
                     allowed_env_keys=self.exec_config.allowed_env_keys,
                 ))
             if self.web_config.enable:
-                tools.register(WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy))
-                tools.register(WebFetchTool(proxy=self.web_config.proxy))
+                tools.register(WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy, proxy_pool=self._proxy_pool))
+                tools.register(WebFetchTool(proxy=self.web_config.proxy, proxy_pool=self._proxy_pool))
             if self.browser_config is not None and self.browser_config.enable:
                 from nanobot.agent.tools.browser import BrowserFetchTool, BrowserSearchTool
-                tools.register(BrowserSearchTool(timeout=self.browser_config.timeout))
-                tools.register(BrowserFetchTool(timeout=self.browser_config.timeout))
+                browser_proxy = {"server": self.browser_config.proxy} if self.browser_config.proxy else None
+                tools.register(BrowserSearchTool(timeout=self.browser_config.timeout, proxy=browser_proxy, proxy_pool=self._proxy_pool))
+                tools.register(BrowserFetchTool(timeout=self.browser_config.timeout, proxy=browser_proxy, proxy_pool=self._proxy_pool))
             # Recursion gate: register SpawnTool only when further nesting is allowed
             if can_recurse:
                 from nanobot.agent.tools.spawn import SpawnTool

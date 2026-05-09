@@ -14,7 +14,10 @@ plain planning without blocking the main flow.
 from __future__ import annotations
 
 import asyncio
+import json
+import time as _time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
@@ -41,6 +44,252 @@ _SEARCH_AGENT_EXCLUDED_TOOLS: frozenset[str] = frozenset({
 _WEB_TOOL_NAMES: frozenset[str] = frozenset({"web_search", "web_fetch"})
 _BROWSER_TOOL_NAMES: frozenset[str] = frozenset({"browser_search", "browser_fetch"})
 _ALL_WEB_SEARCH_TOOLS: frozenset[str] = _WEB_TOOL_NAMES | _BROWSER_TOOL_NAMES
+
+
+# ---------------------------------------------------------------------------
+# Knowledge cutoff resolution (disk-cached, auto-refreshed via LLM)
+# ---------------------------------------------------------------------------
+#
+# The cache file lives at ``<data_dir>/model_cutoff.json`` and is empty by
+# default.  On first use (or when the file is older than
+# ``_CUTOFF_CACHE_MAX_AGE_DAYS``), a single-turn LLM call queries the model
+# for current cutoff dates.  This avoids hard-coding dates that drift over time.
+#
+# Fallback: a minimal built-in map ensures the system degrades gracefully
+# when the cache is unavailable (e.g. first-ever run before refresh).
+
+# Minimal fallback — used only when the cache file is unavailable.
+# Keys are *substrings* matched against the model name (longest first),
+# so shorter common prefixes (e.g. "qwen", "deepseek") act as catch-alls.
+_FALLBACK_CUTOFF_MAP: dict[str, str] = {
+    # OpenAI
+    "gpt-4o": "2024-06",
+    "gpt-4": "2023-12",
+    # Anthropic
+    "claude-sonnet-4": "2025-01",
+    "claude-3.5-sonnet": "2024-04",
+    "claude-3-opus": "2024-02",
+    # Google
+    "gemini-2.5": "2025-01",
+    "gemini-2": "2024-08",
+    "gemini": "2024-02",
+    # Qwen / Alibaba
+    "qwen3": "2025-04",
+    "qwen2.5": "2024-12",
+    "qwen": "2024-06",
+    # DeepSeek
+    "deepseek-v3": "2024-12",
+    "deepseek-r1": "2024-12",
+    "deepseek": "2024-12",
+    # Meta
+    "llama-4": "2025-04",
+    "llama-3": "2023-12",
+    # Mistral
+    "mistral-large": "2024-11",
+    "mistral": "2024-04",
+}
+
+# Maximum age of the cache file before a refresh is triggered.
+_CUTOFF_CACHE_MAX_AGE_DAYS: float = 7.0
+
+# Module-level in-memory cache (loaded once from disk).
+_cutoff_cache: dict[str, str] | None = None
+_cutoff_cache_ts: float = 0.0
+
+
+def _cutoff_cache_path() -> Path:
+    """Return the path to the model cutoff cache file."""
+    from nanobot.config.paths import get_data_dir
+
+    return get_data_dir() / "model_cutoff.json"
+
+
+def _load_cutoff_cache_sync() -> None:
+    """Load the cutoff cache from disk into module-level state (idempotent)."""
+    global _cutoff_cache, _cutoff_cache_ts
+    if _cutoff_cache is not None:
+        return  # already loaded
+    path = _cutoff_cache_path()
+    if not path.exists():
+        logger.debug("ModelCutoffCache: no cache file at {}", path)
+        _cutoff_cache = {}
+        _cutoff_cache_ts = 0.0
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entries = data.get("entries", {})
+        updated_at = data.get("updated_at", 0.0)
+        if isinstance(entries, dict) and isinstance(updated_at, (int, float)):
+            _cutoff_cache = {str(k).strip().lower(): str(v).strip() for k, v in entries.items()}
+            _cutoff_cache_ts = float(updated_at)
+            age_days = (_time.time() - _cutoff_cache_ts) / 86400.0 if _cutoff_cache_ts else 0.0
+            logger.debug(
+                "ModelCutoffCache: loaded {} entries from {} (age={:.1f}d)",
+                len(_cutoff_cache), path.name, age_days,
+            )
+        else:
+            logger.debug("ModelCutoffCache: invalid cache format in {}, treating as empty", path.name)
+            _cutoff_cache = {}
+            _cutoff_cache_ts = 0.0
+    except Exception as exc:
+        logger.debug("ModelCutoffCache: failed to load cache from {}: {}", path.name, exc)
+        _cutoff_cache = {}
+        _cutoff_cache_ts = 0.0
+
+
+def _save_cutoff_cache(entries: dict[str, str]) -> None:
+    """Persist the cutoff cache to disk and update module-level state."""
+    global _cutoff_cache, _cutoff_cache_ts
+    path = _cutoff_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _cutoff_cache_ts = _time.time()
+    _cutoff_cache = dict(entries)
+    data = {"updated_at": _cutoff_cache_ts, "entries": _cutoff_cache}
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    logger.info("ModelCutoffCache: saved {} entries to {}", len(entries), path)
+
+
+def get_knowledge_cutoff(model: str) -> str:
+    """Resolve the knowledge cutoff date for *model*.
+
+    Checks the disk cache first; falls back to the built-in minimal map.
+    Returns a human-readable date string (e.g. ``"2024-06"``) or a note
+    advising caution for unknown models.
+    """
+    if not model:
+        return "unknown — if unsure, lean toward TRIGGER for post-2024 technologies"
+
+    _load_cutoff_cache_sync()
+    model_lower = model.lower()
+
+    # 1. Check disk cache (longest-key-first)
+    cache = _cutoff_cache or {}
+    for key in sorted(cache, key=len, reverse=True):
+        if key in model_lower:
+            cutoff = cache[key]
+            logger.debug("ModelCutoffCache: lookup '{}' → '{}' (source=cache[{}])", model, cutoff, key)
+            return cutoff
+
+    # 2. Fallback to built-in map
+    for key in sorted(_FALLBACK_CUTOFF_MAP, key=len, reverse=True):
+        if key in model_lower:
+            cutoff = _FALLBACK_CUTOFF_MAP[key]
+            logger.debug("ModelCutoffCache: lookup '{}' → '{}' (source=fallback[{}])", model, cutoff, key)
+            return cutoff
+
+    logger.debug("ModelCutoffCache: lookup '{}' → unknown", model)
+    return "unknown — if unsure, lean toward TRIGGER for post-2024 technologies"
+
+
+def is_cutoff_cache_stale() -> bool:
+    """Return True if the cutoff cache is missing or older than the max age."""
+    _load_cutoff_cache_sync()
+    if not _cutoff_cache:
+        logger.debug("ModelCutoffCache: stale=true (no cache loaded)")
+        return True
+    age_days = (_time.time() - _cutoff_cache_ts) / 86400.0
+    stale = age_days >= _CUTOFF_CACHE_MAX_AGE_DAYS
+    logger.debug(
+        "ModelCutoffCache: stale={} (age={:.1f}d, threshold={:.0f}d, entries={})",
+        stale, age_days, _CUTOFF_CACHE_MAX_AGE_DAYS, len(_cutoff_cache),
+    )
+    return stale
+
+
+async def refresh_cutoff_cache(provider: "LLMProvider", model: str) -> bool:
+    """Refresh the cutoff cache by asking the LLM for current model cutoff dates.
+
+    Uses a single-turn no-tool call.  The prompt tells the LLM its own model
+    name and asks it to list cutoff dates for common models — without relying
+    on hardcoded model lists, so any model (``qwen3.6-plus``, ``glm-4``, …)
+    is handled out of the box.
+    """
+    model = (model or "").strip()
+    model_lower = model.lower()
+
+    # Detect a rough family label for logging / prompt emphasis
+    family_hint = ""
+    if any(kw in model_lower for kw in ("gpt", "o1", "o3", "o4")):
+        family_hint = "OpenAI's GPT / o‑series"
+    elif "claude" in model_lower:
+        family_hint = "Anthropic's Claude"
+    elif "gemini" in model_lower:
+        family_hint = "Google's Gemini"
+    elif "qwen" in model_lower:
+        family_hint = "Alibaba's Qwen"
+    elif "deepseek" in model_lower:
+        family_hint = "DeepSeek"
+    elif "llama" in model_lower:
+        family_hint = "Meta's Llama"
+    elif "mistral" in model_lower or "codestral" in model_lower:
+        family_hint = "Mistral"
+
+    prompt = (
+        f"You are the model '{model}'"
+        + (f" from {family_hint}" if family_hint else "")
+        + ". "
+        "List the approximate knowledge cutoff dates for common AI models. "
+        "YOUR OWN cutoff is the most important — list it first. "
+        "Then include popular models from major families: "
+        "OpenAI (gpt-4o, gpt-4, o-series), Anthropic (claude), "
+        "Google (gemini), DeepSeek, Qwen, Meta (llama), Mistral. "
+        "Include every model you are confident about (typically 10–20 entries). "
+        "Output ONLY a JSON object mapping model identifier substrings to "
+        "cutoff dates in YYYY-MM format. "
+        'Example: {"gpt-4o": "2024-06", "claude-3.5-sonnet": "2024-04"}. '
+        "Output only the JSON object, no markdown fences, no other text."
+    )
+
+    logger.info(
+        "ModelCutoffCache: refreshing, current model='{}', family_hint='{}'",
+        model, family_hint or "(none)",
+    )
+
+    try:
+        response = await provider.chat_with_retry(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            max_tokens=2000,
+            temperature=0.0,
+        )
+        if not response.content:
+            logger.warning("ModelCutoffCache: LLM returned empty response")
+            return False
+
+        text = response.content.strip()
+        # Strip markdown code fences if present
+        if text.startswith("```"):
+            lines = text.split("\n")
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].rstrip().startswith("```"):
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+
+        data = json.loads(text)
+        if not isinstance(data, dict) or not data:
+            logger.warning("ModelCutoffCache: LLM returned non-dict JSON")
+            return False
+
+        # Validate: keys are str, values are date-like str
+        entries: dict[str, str] = {}
+        for k, v in data.items():
+            if isinstance(v, str) and len(v.strip()) >= 7:
+                entries[str(k).strip().lower()] = v.strip()
+        if not entries:
+            logger.warning("ModelCutoffCache: no valid entries in LLM response")
+            return False
+
+        _save_cutoff_cache(entries)
+        logger.info("ModelCutoffCache: refreshed with {} entries", len(entries))
+        return True
+
+    except json.JSONDecodeError as exc:
+        logger.warning("ModelCutoffCache: failed to parse LLM response as JSON: {}", exc)
+    except Exception as exc:
+        logger.warning("ModelCutoffCache: refresh failed: {}", exc)
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +337,7 @@ class SearchEnhancedPlanner:
         max_purified_chars: int = 2000,
         search_on_replan: bool = False,
         web_search_backend: str = "auto",
+        reasoning_effort: str | None = None,
     ) -> None:
         from nanobot.agent.runner import AgentRunner
 
@@ -101,6 +351,7 @@ class SearchEnhancedPlanner:
         self._max_purified_chars = max_purified_chars
         self._search_on_replan = search_on_replan
         self._web_search_backend = web_search_backend.strip().lower() if web_search_backend else "auto"
+        self._reasoning_effort = reasoning_effort
         self._runner = AgentRunner(provider)
 
     # ------------------------------------------------------------------
@@ -126,9 +377,11 @@ class SearchEnhancedPlanner:
         from nanobot.utils.prompt_templates import render_template
 
         time_ctx = ContextBuilder._build_runtime_context(None, None)
+        knowledge_cutoff = get_knowledge_cutoff(self._model)
         system_prompt = render_template(
             "agent/search_decision_system.md",
             time_ctx=time_ctx,
+            knowledge_cutoff=knowledge_cutoff,
             has_existing_info=bool(existing_info),
         )
 
@@ -152,6 +405,7 @@ class SearchEnhancedPlanner:
                     model=self._model,
                     max_iterations=1,
                     max_tool_result_chars=self._max_tool_result_chars,
+                    reasoning_effort=self._reasoning_effort,
                     error_message=None,
                 )
             )
@@ -171,8 +425,9 @@ class SearchEnhancedPlanner:
             return False, []
 
         if first_line.startswith("TRIGGER"):
-            # Parse keywords from "TRIGGER: kw1, kw2, ..."
-            rest = raw.split(":", 1)[1].strip() if ":" in raw else task[:80]
+            # Parse keywords from the decision line only (ignore optional debug comments)
+            decision_line = raw.split("\n", 1)[0].strip()
+            rest = decision_line.split(":", 1)[1].strip() if ":" in decision_line else task[:80]
             keywords = [k.strip() for k in rest.split(",") if k.strip()][:5]
             if not keywords:
                 keywords = [task[:80]]
@@ -387,6 +642,19 @@ class SearchEnhancedPlanner:
                     await progress_callback(msg)
                 except Exception:
                     pass
+
+        # --- Cutoff cache maintenance (fire-and-forget, non-blocking) ---
+        if is_cutoff_cache_stale():
+            # Defer to a background coroutine so planning is never blocked
+            # by the cache refresh call.  The stale cutoff values from the
+            # fallback or old cache are acceptable for the current turn.
+            logger.info(
+                "ModelCutoffCache: cache is stale or missing, scheduling background refresh"
+            )
+            async def _refresh_cutoff_cache_bg() -> None:
+                await refresh_cutoff_cache(self._provider, self._model)
+
+            asyncio.create_task(_refresh_cutoff_cache_bg())
 
         search_triggered = False
         search_keywords: list[str] = []
