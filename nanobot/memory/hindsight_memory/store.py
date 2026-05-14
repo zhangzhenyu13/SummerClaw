@@ -233,18 +233,24 @@ class HindsightStore(_NaiveStore):
         provider: "LLMProvider | None" = None,
         embedding_model: str | None = None,
         max_memories: int = _DEFAULT_MAX_MEMORIES,
+        algo_name: str | None = None,
     ):
         # Ensure hindsight-memory logs are always visible even when the CLI's
         # ``logger.disable("nanobot")`` silences the parent namespace.
         logger.enable("nanobot.memory.hindsight_memory")
 
-        super().__init__(workspace, max_history_entries=max_history_entries)
+        super().__init__(workspace, max_history_entries=max_history_entries, algo_name=algo_name)
         self._provider = provider
         self._embedding_model = embedding_model
         self._max_memories = max_memories
 
         # Memory bank
         self._memories_path = self.memory_dir / "hindsight_memories.json"
+
+        # Migrate legacy hindsight-specific files if needed
+        if algo_name:
+            self._migrate_hindsight_legacy()
+
         self._memories: dict[str, dict] = {}  # mem_id → record
         self._bm25 = _BM25Index()
         # Entity → set of memory IDs (for graph expansion)
@@ -253,6 +259,17 @@ class HindsightStore(_NaiveStore):
         self._links: dict[str, list[tuple[str, str, float]]] = defaultdict(list)
 
         self._load_memories()
+
+    def _migrate_hindsight_legacy(self) -> None:
+        """Migrate hindsight-specific files from the legacy location."""
+        from nanobot.memory.migrate import maybe_migrate_legacy_files
+        old_memory_dir = self.workspace / "memory"
+        maybe_migrate_legacy_files(
+            memory_dir=self.memory_dir,
+            old_memory_dir=old_memory_dir,
+            old_workspace=self.workspace,
+            files=["hindsight_memories.json"],
+        )
 
     # -- properties -----------------------------------------------------------
 

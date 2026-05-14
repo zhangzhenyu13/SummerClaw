@@ -112,7 +112,7 @@ class TestDreamRun:
         assert expected in system_prompt
 
     async def test_skill_write_tool_accepts_workspace_relative_skill_path(self, dream, store):
-        """Dream skill creation rewrites skills/<name>/SKILL.md to skills/dreamed-<name>/SKILL.md."""
+        """Dream skill creation rewrites skills/<name>/SKILL.md to skills/dreamed--<algo_name>-<name>/SKILL.md."""
         write_tool = dream._tools.get("write_file")
         assert write_tool is not None
 
@@ -122,8 +122,8 @@ class TestDreamRun:
         )
 
         assert "Successfully wrote" in result
-        # SkillPrefixWriteFileTool rewrites the path to include "dreamed-" prefix
-        assert (store.workspace / "skills" / "dreamed-test-skill" / "SKILL.md").exists()
+        # SkillPrefixWriteFileTool rewrites the path to include "dreamed--naive_memory-" prefix
+        assert (store.workspace / "skills" / "dreamed--naive_memory-test-skill" / "SKILL.md").exists()
 
     async def test_phase1_prompt_includes_line_age_annotations(self, dream, mock_provider, mock_runner, store):
         """Phase 1 prompt should have per-line age suffixes in MEMORY.md when git is available."""

@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 
 from nanobot.memory import MemoryStore
+from nanobot.memory.mastra_om_memory.store import MastraOMStore
+from nanobot.memory.mem0v3_memory.store import Mem0V3Store
+from nanobot.memory.nemori_memory.store import NemoriStore
+from nanobot.memory.supermemory_memory.store import SupermemoryStore
+from nanobot.memory.layerga_memory.store import LayergaStore
+from nanobot.memory.hindsight_memory.store import HindsightStore
 
 
 @pytest.fixture
@@ -288,3 +294,79 @@ class TestLegacyHistoryMigration:
         assert entries[0]["timestamp"] == "2026-04-01 10:00"
         assert "Broken" in entries[0]["content"]
         assert "migration." in entries[0]["content"]
+
+
+class TestMemoryStorePathIsolation:
+    """Tests for algorithm-specific path isolation in all memory stores."""
+
+    @pytest.fixture
+    def ws(self, tmp_path):
+        return tmp_path
+
+    def test_naive_memorydir_isolation(self, ws):
+        """MemoryStore with algo_name writes to workspace/memory/<name>/."""
+        s = MemoryStore(ws, algo_name="naive_memory")
+        assert s.memory_dir == ws / "memory" / "naive_memory"
+        assert s.soul_file == s.memory_dir / "SOUL.md"
+        assert s.user_file == s.memory_dir / "USER.md"
+        s.write_memory("isolated memory")
+        assert (s.memory_dir / "MEMORY.md").read_text() == "isolated memory"
+
+    def test_naive_legacy_compat(self, ws):
+        """MemoryStore without algo_name falls back to legacy paths."""
+        s = MemoryStore(ws)
+        assert s.memory_dir == ws / "memory"
+        assert s.soul_file == ws / "SOUL.md"
+        assert s.user_file == ws / "USER.md"
+
+    def test_naive_migration(self, ws):
+        """Legacy files are migrated to the isolated directory on first init."""
+        old_dir = ws / "memory"
+        old_dir.mkdir(parents=True, exist_ok=True)
+        (old_dir / "MEMORY.md").write_text("legacy mem")
+        (ws / "SOUL.md").write_text("legacy soul")
+        s = MemoryStore(ws, algo_name="naive_memory")
+        assert (s.memory_dir / "MEMORY.md").read_text() == "legacy mem"
+        assert (s.memory_dir / "SOUL.md").read_text() == "legacy soul"
+
+    def test_naive_migration_idempotent(self, ws):
+        old_dir = ws / "memory"
+        old_dir.mkdir(parents=True, exist_ok=True)
+        (old_dir / "MEMORY.md").write_text("shared")
+        s1 = MemoryStore(ws, algo_name="test_algo")
+        assert (s1.memory_dir / "MEMORY.md").read_text() == "shared"
+        (s1.memory_dir / "MEMORY.md").write_text("modified")
+        s2 = MemoryStore(ws, algo_name="test_algo")
+        assert (s2.memory_dir / "MEMORY.md").read_text() == "modified"
+
+    def test_mastra_om_isolation(self, ws):
+        s = MastraOMStore(ws, algo_name="mastra_om_memory")
+        assert s.memory_dir == ws / "memory" / "mastra_om_memory"
+        assert s.soul_file == s.memory_dir / "SOUL.md"
+        assert s.user_file == s.memory_dir / "USER.md"
+
+    def test_mem0v3_isolation(self, ws):
+        s = Mem0V3Store(ws, algo_name="mem0v3_memory")
+        assert s.memory_dir == ws / "memory" / "mem0v3_memory"
+        assert s._memories_path == s.memory_dir / "mem0v3_memories.json"
+
+    def test_nemori_isolation(self, ws):
+        s = NemoriStore(ws, algo_name="nemori_memory", backend="file")
+        assert s._episodes._path.parent == ws / "memory" / "nemori_memory"
+
+    def test_supermemory_isolation(self, ws):
+        s = SupermemoryStore(ws, algo_name="supermemory_memory")
+        assert s.memory_dir == ws / "memory" / "supermemory_memory"
+        assert s._graph_file == s.memory_dir / "memory_graph.json"
+
+    def test_layerga_isolation(self, ws):
+        s = LayergaStore(ws, algo_name="layerga_memory")
+        assert s.memory_dir == ws / "memory" / "layerga_memory"
+        assert s._insight_file == s.memory_dir / "layer_insight.txt"
+        assert s._facts_file == s.memory_dir / "layer_facts.txt"
+        assert s._constitution_file == s.memory_dir / "constitution.md"
+
+    def test_hindsight_isolation(self, ws):
+        s = HindsightStore(ws, algo_name="hindsight_memory")
+        assert s.memory_dir == ws / "memory" / "hindsight_memory"
+        assert s._memories_path == s.memory_dir / "hindsight_memories.json"

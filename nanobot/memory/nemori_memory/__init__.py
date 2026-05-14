@@ -75,7 +75,7 @@ class NemoriMemoryAlgorithm(MemoryAlgorithm):
         embedding_config: Any = None,
     ) -> MemoryComponents:
         # Storage layer
-        store = NemoriStore(workspace, backend="file")
+        store = NemoriStore(workspace, backend="file", algo_name=self.name)
 
         # Pipeline components
         segmenter = BatchSegmenter(provider, model)
@@ -113,6 +113,7 @@ class NemoriMemoryAlgorithm(MemoryAlgorithm):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
         )
 
         return MemoryComponents(

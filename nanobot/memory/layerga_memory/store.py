@@ -41,13 +41,18 @@ class LayergaStore(MemoryStore):
         workspace: Path,
         max_history_entries: int = 1000,
         l1_max_lines: int = _L1_MAX_LINES,
+        algo_name: str | None = None,
     ):
-        super().__init__(workspace, max_history_entries)
+        super().__init__(workspace, max_history_entries, algo_name=algo_name)
         self.l1_max_lines = l1_max_lines
 
-        # L0 constitution
-        self._constitution_dir = ensure_dir(workspace / "layerga")
-        self._constitution_file = self._constitution_dir / "constitution.md"
+        # L0 constitution (moved inside algorithm dir)
+        if algo_name:
+            self._constitution_dir = ensure_dir(self.memory_dir)
+            self._constitution_file = self.memory_dir / "constitution.md"
+        else:
+            self._constitution_dir = ensure_dir(workspace / "layerga")
+            self._constitution_file = self._constitution_dir / "constitution.md"
 
         # L1 insight index
         self._insight_file = self.memory_dir / "layer_insight.txt"
@@ -62,8 +67,38 @@ class LayergaStore(MemoryStore):
         self._archives_dir = ensure_dir(self.memory_dir / "archives")
         self._all_histories_file = self._archives_dir / "all_histories.txt"
 
+        # Migrate legacy layerga-specific files if needed
+        if algo_name:
+            self._migrate_layerga_legacy()
+
         # Ensure L0-L2 files exist on first init
         self._ensure_layered_files()
+
+    def _migrate_layerga_legacy(self) -> None:
+        """Migrate layerga-specific files from the legacy location."""
+        from nanobot.memory.migrate import maybe_migrate_legacy_files
+        old_memory_dir = self.workspace / "memory"
+        old_workspace = self.workspace
+
+        # Migrate L0 constitution from workspace/layerga/
+        old_constitution = self.workspace / "layerga" / "constitution.md"
+        new_constitution = self.memory_dir / "constitution.md"
+        if old_constitution.exists() and not new_constitution.exists():
+            import shutil
+            shutil.copy2(old_constitution, new_constitution)
+            logger.info("Migrated {} -> {}", old_constitution, new_constitution)
+
+        # Migrate L1-L4 files from old memory dir
+        maybe_migrate_legacy_files(
+            memory_dir=self.memory_dir,
+            old_memory_dir=old_memory_dir,
+            old_workspace=old_workspace,
+            files=[
+                "layer_insight.txt",
+                "layer_facts.txt",
+            ],
+            dirs=["sop", "archives"],
+        )
 
     # ------------------------------------------------------------------
     # L0 — Meta-Rules Constitution

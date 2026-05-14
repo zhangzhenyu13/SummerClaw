@@ -47,6 +47,7 @@ class LayergaDream(Dream):
         annotate_line_ages: bool = True,
         enable_l1_cleanup: bool = True,
         enable_auto_crystallize: bool = True,
+        algo_name: str = "layerga_memory",
     ):
         super().__init__(
             store=store,
@@ -56,6 +57,7 @@ class LayergaDream(Dream):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=algo_name,
         )
         self.layered_store: LayergaStore = store  # typed alias
         self.decision_tree = decision_tree
@@ -187,6 +189,7 @@ class LayergaDream(Dream):
                     "agent/dream_phase2.md",
                     strip=True,
                     skill_creator_path=str(skill_creator_path),
+                    memory_rel_path=f"memory/{self._algo_name}/MEMORY.md",
                 )
                 + self._layered_phase2_suffix(),
             },

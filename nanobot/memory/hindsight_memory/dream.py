@@ -46,6 +46,7 @@ class HindsightDream:
         annotate_line_ages: bool = True,
         *,
         hindsight_store: Any = None,
+        algo_name: str = "hindsight_memory",
     ):
         self.store = store
         self.provider = provider
@@ -55,6 +56,7 @@ class HindsightDream:
         self.max_tool_result_chars = max_tool_result_chars
         self.annotate_line_ages = annotate_line_ages
         self._hindsight_store = hindsight_store
+        self._algo_name = algo_name
         self._runner = AgentRunner(provider)
         self._tools = self._build_tools()
 
@@ -84,7 +86,7 @@ class HindsightDream:
         skills_dir = workspace / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         tools.register(SkillPrefixWriteFileTool(
-            skill_prefix="dreamed",
+            skill_prefix=f"dreamed--{self._algo_name}",
             workspace=workspace,
             allowed_dir=skills_dir,
         ))
@@ -118,7 +120,7 @@ class HindsightDream:
     # -- line age annotation -------------------------------------------------
 
     def _annotate_with_ages(self, content: str) -> str:
-        file_path = "memory/MEMORY.md"
+        file_path = f"memory/{self._algo_name}/MEMORY.md"
         try:
             ages = self.store.git.line_ages(file_path)
         except Exception:
@@ -265,6 +267,7 @@ class HindsightDream:
                     "agent/dream_phase2.md",
                     strip=True,
                     skill_creator_path=str(skill_creator_path),
+                    memory_rel_path=f"memory/{self._algo_name}/MEMORY.md",
                 ),
             },
             {"role": "user", "content": phase2_prompt},

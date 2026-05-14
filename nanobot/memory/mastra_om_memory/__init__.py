@@ -96,7 +96,7 @@ class MastraOMMemoryAlgorithm(MemoryAlgorithm):
         embedding_config: Any = None,
     ) -> MemoryComponents:
         # 1. Store
-        store = MastraOMStore(workspace)
+        store = MastraOMStore(workspace, algo_name=self.name)
 
         # 2. Consolidator (Observer/Reflector pipeline)
         consolidator = MastraOMConsolidator(
@@ -122,6 +122,7 @@ class MastraOMMemoryAlgorithm(MemoryAlgorithm):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
         )
 
         # 4. AutoCompact (optional)

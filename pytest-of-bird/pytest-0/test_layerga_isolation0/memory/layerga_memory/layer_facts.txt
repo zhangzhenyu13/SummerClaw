@@ -1,0 +1,5 @@
+# Environment Facts (L2)
+
+> Only action-verified, environment-specific facts that an LLM cannot infer zero-shot.
+> Organized as ## [SECTION] blocks.
+

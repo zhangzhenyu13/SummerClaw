@@ -66,7 +66,7 @@ class SupermemoryMemoryAlgorithm(MemoryAlgorithm):
             embedding_model = embedding_config.model
 
         # Create the Supermemory store with graph, chunks, and relationship tracking
-        store = SupermemoryStore(workspace)
+        store = SupermemoryStore(workspace, algo_name=self.name)
 
         # Chunk-based consolidator with memory graph integration and embedding support
         consolidator = SupermemoryConsolidator(
@@ -90,6 +90,7 @@ class SupermemoryMemoryAlgorithm(MemoryAlgorithm):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
         )
 
         # Auto-compact for idle session compression

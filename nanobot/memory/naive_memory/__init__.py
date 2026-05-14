@@ -42,7 +42,7 @@ class NaiveMemoryAlgorithm(MemoryAlgorithm):
         annotate_line_ages: bool,
         embedding_config: Any = None,
     ) -> MemoryComponents:
-        store = MemoryStore(workspace)
+        store = MemoryStore(workspace, algo_name=self.name)
 
         consolidator = Consolidator(
             store=store,
@@ -63,6 +63,7 @@ class NaiveMemoryAlgorithm(MemoryAlgorithm):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
         )
 
         auto_compact = AutoCompact(

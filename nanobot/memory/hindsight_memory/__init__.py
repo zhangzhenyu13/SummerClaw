@@ -74,6 +74,7 @@ class HindsightMemoryAlgorithm(MemoryAlgorithm):
             workspace,
             provider=provider,
             embedding_model=embedding_model,
+            algo_name=self.name,
         )
 
         # 2. Consolidator — token-budget + TEMPR retention
@@ -99,6 +100,7 @@ class HindsightMemoryAlgorithm(MemoryAlgorithm):
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
             hindsight_store=store,
+            algo_name=self.name,
         )
 
         # 4. AutoCompact — idle session compression

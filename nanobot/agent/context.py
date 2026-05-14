@@ -7,6 +7,8 @@ from importlib.resources import files as pkg_files
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from nanobot.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.utils.helpers import build_assistant_message, current_time_str, detect_image_mime
@@ -68,12 +70,31 @@ class ContextBuilder:
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
 
+        # Compute algorithm-aware relative paths for identity instructions
+        try:
+            memory_rel = str(self.memory.memory_file.relative_to(self.workspace))
+            history_rel = str(self.memory.history_file.relative_to(self.workspace))
+            logger.info(
+                "Identity paths resolved: memory_store={}, memory_file={}, history_file={}",
+                type(self.memory).__name__, memory_rel, history_rel,
+            )
+        except Exception as _exc:
+            logger.warning(
+                "memory_store {} missing memory_file/history_file attrs ({}); "
+                "falling back to legacy paths memory/MEMORY.md, memory/history.jsonl",
+                type(self.memory).__name__, _exc,
+            )
+            memory_rel = "memory/MEMORY.md"
+            history_rel = "memory/history.jsonl"
+
         return render_template(
             "agent/identity.md",
             workspace_path=workspace_path,
             runtime=runtime,
             platform_policy=render_template("agent/platform_policy.md", system=system),
             channel=channel or "",
+            memory_rel_path=memory_rel,
+            history_rel_path=history_rel,
         )
 
     @staticmethod

@@ -22,6 +22,7 @@ from loguru import logger
 
 from nanobot.utils.helpers import ensure_dir, strip_think
 from nanobot.utils.gitstore import GitStore
+from nanobot.memory.migrate import maybe_migrate_legacy_files
 
 
 class MastraOMStore:
@@ -43,23 +44,72 @@ class MastraOMStore:
         r"^\[\d{4}-\d{2}-\d{2}[^\]]*\]\s+[A-Z][A-Z0-9_]*(?:\s+\[tools:\s*[^\]]+\])?:"
     )
 
-    def __init__(self, workspace: Path, max_history_entries: int = _DEFAULT_MAX_HISTORY):
+    def __init__(
+        self,
+        workspace: Path,
+        max_history_entries: int = _DEFAULT_MAX_HISTORY,
+        algo_name: str | None = None,
+    ):
         self.workspace = workspace
         self.max_history_entries = max_history_entries
-        self.memory_dir = ensure_dir(workspace / "memory")
+
+        if algo_name:
+            self._algo_name = algo_name
+            self.memory_dir = ensure_dir(workspace / "memory" / algo_name)
+        else:
+            self._algo_name = None
+            self.memory_dir = ensure_dir(workspace / "memory")
+
         self.observations_file = self.memory_dir / "OBSERVATIONS.md"
+        self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "history.jsonl"
         self.legacy_history_file = self.memory_dir / "HISTORY.md"
-        self.soul_file = workspace / "SOUL.md"
-        self.user_file = workspace / "USER.md"
+        if algo_name:
+            self.soul_file = self.memory_dir / "SOUL.md"
+            self.user_file = self.memory_dir / "USER.md"
+        else:
+            self.soul_file = workspace / "SOUL.md"
+            self.user_file = workspace / "USER.md"
         self._cursor_file = self.memory_dir / ".cursor"
         self._dream_cursor_file = self.memory_dir / ".dream_cursor"
         self._obs_cursor_file = self.memory_dir / ".obs_cursor"
         self._generation_file = self.memory_dir / ".om_generation"
-        self._git = GitStore(workspace, tracked_files=[
-            "SOUL.md", "USER.md", "memory/OBSERVATIONS.md", "memory/MEMORY.md",
-        ])
+        self._git = GitStore(
+            workspace,
+            tracked_files=[
+                f"memory/{algo_name}/SOUL.md" if algo_name else "SOUL.md",
+                f"memory/{algo_name}/USER.md" if algo_name else "USER.md",
+                f"memory/{algo_name}/OBSERVATIONS.md" if algo_name else "memory/OBSERVATIONS.md",
+                f"memory/{algo_name}/MEMORY.md" if algo_name else "memory/MEMORY.md",
+            ],
+        )
+
+        if algo_name:
+            self._migrate_from_legacy()
+
         self._maybe_migrate_legacy_history()
+
+    def _migrate_from_legacy(self) -> None:
+        """Migrate data from the legacy shared location to the algorithm-specific dir."""
+        old_memory_dir = self.workspace / "memory"
+        old_workspace = self.workspace
+        maybe_migrate_legacy_files(
+            memory_dir=self.memory_dir,
+            old_memory_dir=old_memory_dir,
+            old_workspace=old_workspace,
+            files=[
+                "OBSERVATIONS.md",
+                "history.jsonl",
+                "HISTORY.md",
+                "MEMORY.md",
+                "SOUL.md",
+                "USER.md",
+                ".cursor",
+                ".dream_cursor",
+                ".obs_cursor",
+                ".om_generation",
+            ],
+        )
 
     @property
     def git(self) -> GitStore:

@@ -627,6 +627,7 @@ class SearchEnhancedPlanner:
         context_summary: str | None = None,
         existing_search_info: str | None = None,
         progress_callback: Callable[[str], Awaitable[None]] | None = None,
+        force_search: bool = False,
     ) -> SearchEnhancedPlanResult:
         """Full search-enhanced planning pipeline.
 
@@ -634,9 +635,13 @@ class SearchEnhancedPlanner:
             1. decide() — should we search? (no tools, pure LLM)
             2. _run_search_agent() — agentic web search with web_search/web_fetch
             3. planner.plan() — generate plan, injecting search results as context
+
+        When *force_search* is True, the decide() step is skipped and the
+        search agent is always invoked (used by ``/search-plan`` mode).
         """
 
         async def _notify(msg: str) -> None:
+            logger.info("SearchEnhancedPlanner: {}", msg)
             if progress_callback:
                 try:
                     await progress_callback(msg)
@@ -662,14 +667,25 @@ class SearchEnhancedPlanner:
         search_failed = False
 
         # --- Sub-module 8.1: Decide ---
-        await _notify("🤔 Deciding whether to search the web...")
-        try:
-            search_triggered, search_keywords = await self.decide(
-                task, existing_info=existing_search_info
+        if force_search:
+            # Force search mode (/search-plan): bypass decide, always search
+            search_triggered = True
+            search_keywords = [kw.strip() for kw in task.split()[:5] if len(kw.strip()) > 2]
+            if not search_keywords:
+                search_keywords = [task[:80]]
+            logger.info(
+                "SearchDecider: force_search=True, keywords={}", search_keywords,
             )
-        except Exception as exc:
-            logger.warning("SearchDecider: unexpected error ({}), skip search", exc)
-            search_triggered = False
+            await _notify(f"🔍 **Forced web search** for: {', '.join(search_keywords[:3])}")
+        else:
+            await _notify("🤔 Deciding whether to search the web...")
+            try:
+                search_triggered, search_keywords = await self.decide(
+                    task, existing_info=existing_search_info
+                )
+            except Exception as exc:
+                logger.warning("SearchDecider: unexpected error ({}), skip search", exc)
+                search_triggered = False
 
         if not search_triggered:
             await _notify("⏩ Skipping web search (not needed for this task)")
@@ -728,6 +744,7 @@ class SearchEnhancedPlanner:
         """
 
         async def _notify(msg: str) -> None:
+            logger.info("SearchEnhancedPlanner: {}", msg)
             if progress_callback:
                 try:
                     await progress_callback(msg)

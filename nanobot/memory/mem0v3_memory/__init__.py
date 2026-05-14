@@ -127,7 +127,7 @@ class Mem0V3MemoryAlgorithm(MemoryAlgorithm):
         # ------------------------------------------------------------------
         # 1. Store — file-based vector store with entity index
         # ------------------------------------------------------------------
-        store = Mem0V3Store(workspace=workspace)
+        store = Mem0V3Store(workspace=workspace, algo_name=self.name)
 
         # ------------------------------------------------------------------
         # 2. Consolidator — single-pass ADD-only extraction
@@ -165,6 +165,7 @@ class Mem0V3MemoryAlgorithm(MemoryAlgorithm):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
         )
 
         # ------------------------------------------------------------------

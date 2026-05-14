@@ -43,6 +43,7 @@ class Dream:
         max_iterations: int = 10,
         max_tool_result_chars: int = 16_000,
         annotate_line_ages: bool = True,
+        algo_name: str = "naive_memory",
     ):
         self.store = store
         self.provider = provider
@@ -52,6 +53,7 @@ class Dream:
         self.max_tool_result_chars = max_tool_result_chars
         # Kill switch for the git-blame-based per-line age annotation in Phase 1.
         self.annotate_line_ages = annotate_line_ages
+        self._algo_name = algo_name
         self._runner = AgentRunner(provider)
         self._tools = self._build_tools()
 
@@ -74,12 +76,12 @@ class Dream:
         tools.register(EditFileTool(workspace=workspace, allowed_dir=workspace))
         # write_file resolves relative paths from workspace root, but can only
         # write under skills/ so the prompt can safely use skills/<name>/SKILL.md.
-        # SkillPrefixWriteFileTool hard-codes the "dreamed-" prefix so that even if
+        # SkillPrefixWriteFileTool enforces the "dreamed--<algo_name>-" prefix so that even if
         # the LLM ignores the prompt naming rule, the directory will always be correct.
         skills_dir = workspace / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         tools.register(SkillPrefixWriteFileTool(
-            skill_prefix="dreamed",
+            skill_prefix=f"dreamed--{self._algo_name}",
             workspace=workspace,
             allowed_dir=skills_dir,
         ))
@@ -122,7 +124,7 @@ class Dream:
         suffix like ``← 30d`` indicating days since last modification.
         SOUL.md and USER.md are never annotated.
         """
-        file_path = "memory/MEMORY.md"
+        file_path = f"memory/{self._algo_name}/MEMORY.md"
         try:
             ages = self.store.git.line_ages(file_path)
         except Exception:
@@ -239,6 +241,7 @@ class Dream:
                     "agent/dream_phase2.md",
                     strip=True,
                     skill_creator_path=str(skill_creator_path),
+                    memory_rel_path=f"memory/{self._algo_name}/MEMORY.md",
                 ),
             },
             {"role": "user", "content": phase2_prompt},

@@ -190,13 +190,23 @@ class NemoriStore:
         workspace: Path,
         backend: str = "file",
         config: dict[str, Any] | None = None,
+        algo_name: str | None = None,
     ) -> None:
         self._workspace = workspace
         self._backend = backend
         self._config = config or {}
 
-        data_dir = workspace / "memory" / "nemori"
+        if algo_name:
+            data_dir = workspace / "memory" / algo_name
+            # Migrate from legacy "memory/nemori/" to "memory/nemori_memory/"
+            self._migrate_from_legacy(workspace, data_dir)
+        else:
+            data_dir = workspace / "memory" / "nemori"
         data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Public attribute aliases for ContextBuilder (identity template path resolution)
+        self.memory_file = data_dir / "MEMORY.md"
+        self.history_file = data_dir / "history.jsonl"
 
         if backend == "file":
             self._episodes = _FileStore(data_dir / "episodes.json")
@@ -213,6 +223,22 @@ class NemoriStore:
             self._qdrant: Any = None
         else:
             raise ValueError(f"Unknown storage backend: {backend}")
+
+    def _migrate_from_legacy(self, workspace: Path, data_dir: Path) -> None:
+        """Migrate from legacy "memory/nemori/" to the algorithm-specific directory."""
+        old_data_dir = workspace / "memory" / "nemori"
+        if not old_data_dir.is_dir():
+            return
+        # Migrate individual files from old_data_dir to data_dir
+        import shutil
+        for fname in ("episodes.json", "semantic_memories.json", "message_buffer.jsonl"):
+            src = old_data_dir / fname
+            dst = data_dir / fname
+            if src.exists() and not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                from loguru import logger
+                logger.info("Migrated {} -> {}", src, dst)
 
     # -- episodes ------------------------------------------------------------
 

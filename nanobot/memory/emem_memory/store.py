@@ -271,26 +271,46 @@ class EMemStore:
         workspace: Path,
         embedding_model: Any | None = None,
         batch_size: int = 32,
+        algo_name: str | None = None,
     ):
         from nanobot.utils.gitstore import GitStore
 
         self.workspace = workspace
-        self.memory_dir = workspace / "memory"
+
+        if algo_name:
+            self._algo_name = algo_name
+            self.memory_dir = workspace / "memory" / algo_name
+        else:
+            self._algo_name = None
+            self.memory_dir = workspace / "memory"
         self.emem_dir = self.memory_dir / "emem"
         self.emem_dir.mkdir(parents=True, exist_ok=True)
 
         # Standard nanobot file paths (for interoperability)
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "history.jsonl"
-        self.soul_file = workspace / "SOUL.md"
-        self.user_file = workspace / "USER.md"
+        if algo_name:
+            self.soul_file = self.memory_dir / "SOUL.md"
+            self.user_file = self.memory_dir / "USER.md"
+        else:
+            self.soul_file = workspace / "SOUL.md"
+            self.user_file = workspace / "USER.md"
         self._cursor_file = self.memory_dir / ".cursor"
         self._dream_cursor_file = self.memory_dir / ".dream_cursor"
 
         # Git integration for line age tracking and auto-commit
-        self._git = GitStore(workspace, tracked_files=[
-            "SOUL.md", "USER.md", "memory/MEMORY.md",
-        ])
+        self._git = GitStore(
+            workspace,
+            tracked_files=[
+                f"memory/{algo_name}/SOUL.md" if algo_name else "SOUL.md",
+                f"memory/{algo_name}/USER.md" if algo_name else "USER.md",
+                f"memory/{algo_name}/MEMORY.md" if algo_name else "memory/MEMORY.md",
+            ],
+        )
+
+        # Migrate legacy shared files if needed
+        if algo_name:
+            self._migrate_from_legacy()
 
         # EDU store with embeddings
         self.edu_store = ContentStore[EDURecord](
@@ -320,6 +340,25 @@ class EMemStore:
             embedding_model=None,
             text_extraction_fn=None,
             enable_embeddings=False,
+        )
+
+    def _migrate_from_legacy(self) -> None:
+        """Migrate data from the legacy shared location to the algorithm-specific dir."""
+        from nanobot.memory.migrate import maybe_migrate_legacy_files
+        old_memory_dir = self.workspace / "memory"
+        maybe_migrate_legacy_files(
+            memory_dir=self.memory_dir,
+            old_memory_dir=old_memory_dir,
+            old_workspace=self.workspace,
+            files=[
+                "MEMORY.md",
+                "history.jsonl",
+                "SOUL.md",
+                "USER.md",
+                ".cursor",
+                ".dream_cursor",
+            ],
+            dirs=["emem"],
         )
 
     # -- Standard file access (interop with naive_memory tools) ---------------

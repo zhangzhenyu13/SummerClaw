@@ -172,21 +172,38 @@ class SupermemoryStore(MemoryStore):
         workspace: Path,
         max_history_entries: int = MemoryStore._DEFAULT_MAX_HISTORY,
         max_nodes: int = _DEFAULT_MAX_NODES,
+        algo_name: str | None = None,
     ) -> None:
         # Ensure supermemory logs are always visible even when the CLI's
         # ``logger.disable("nanobot")`` silences the parent namespace.
         logger.enable("nanobot.memory.supermemory_memory")
 
-        super().__init__(workspace, max_history_entries=max_history_entries)
+        super().__init__(workspace, max_history_entries=max_history_entries, algo_name=algo_name)
         self.max_nodes = max_nodes
         self._graph_file = self.memory_dir / "memory_graph.json"
         self._chunks_dir = ensure_dir(self.memory_dir / "chunks")
+
+        # Migrate legacy supermemory-specific files if needed
+        if algo_name:
+            self._migrate_supermemory_legacy()
 
         # In-memory caches (lazy-loaded, flushed on write)
         self._nodes: dict[str, MemoryNode] = {}
         self._edges: dict[str, MemoryEdge] = {}
         self._chunks: dict[str, SourceChunk] = {}
         self._load_graph()
+
+    def _migrate_supermemory_legacy(self) -> None:
+        """Migrate supermemory-specific files from the legacy location."""
+        from nanobot.memory.migrate import maybe_migrate_legacy_files
+        old_memory_dir = self.workspace / "memory"
+        maybe_migrate_legacy_files(
+            memory_dir=self.memory_dir,
+            old_memory_dir=old_memory_dir,
+            old_workspace=self.workspace,
+            files=["memory_graph.json"],
+            dirs=["chunks"],
+        )
 
     # ------------------------------------------------------------------
     # Graph persistence

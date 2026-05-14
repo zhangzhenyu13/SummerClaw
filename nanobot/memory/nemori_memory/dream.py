@@ -55,6 +55,7 @@ class NemoriDream:
         max_iterations: int = 10,
         max_tool_result_chars: int = 16_000,
         annotate_line_ages: bool = True,
+        algo_name: str = "nemori_memory",
     ) -> None:
         self.store = store
         self._search = search
@@ -65,6 +66,7 @@ class NemoriDream:
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.annotate_line_ages = annotate_line_ages
+        self._algo_name = algo_name
 
         self._runner = AgentRunner(provider)
         self._tools = self._build_tools()
@@ -97,7 +99,7 @@ class NemoriDream:
         skills_dir = workspace / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         tools.register(SkillPrefixWriteFileTool(
-            skill_prefix="dreamed",
+            skill_prefix=f"dreamed--{self._algo_name}",
             workspace=workspace,
             allowed_dir=skills_dir,
         ))
@@ -183,9 +185,9 @@ class NemoriDream:
 
         # Build context for Phase 1
         current_date = datetime.now().strftime("%Y-%m-%d")
-        memory_file = self.workspace / "memory" / "MEMORY.md"
-        soul_file = self.workspace / "SOUL.md"
-        user_file = self.workspace / "USER.md"
+        memory_file = self.workspace / "memory" / self._algo_name / "MEMORY.md"
+        soul_file = self.workspace / "memory" / self._algo_name / "SOUL.md"
+        user_file = self.workspace / "memory" / self._algo_name / "USER.md"
 
         raw_memory = self._read_file(memory_file)
         current_memory = (
@@ -355,7 +357,7 @@ class NemoriDream:
             git = GitStore(self.workspace)
             if not git.is_initialized():
                 return content
-            ages = git.line_ages("memory/MEMORY.md")
+            ages = git.line_ages(f"memory/{self._algo_name}/MEMORY.md")
         except Exception:
             logger.debug("line_ages unavailable for nemori dream; skipping annotation")
             return content

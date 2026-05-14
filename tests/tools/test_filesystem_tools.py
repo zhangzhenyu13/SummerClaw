@@ -6,6 +6,7 @@ from nanobot.agent.tools.filesystem import (
     EditFileTool,
     ListDirTool,
     ReadFileTool,
+    SkillPrefixWriteFileTool,
     _find_match,
 )
 
@@ -408,3 +409,133 @@ class TestWorkspaceRestriction:
         assert "Error" in result
         assert "outside" in result.lower()
         assert skill_file.read_text() == "# Weather\nOriginal content."
+
+
+# ---------------------------------------------------------------------------
+# SkillPrefixWriteFileTool
+# ---------------------------------------------------------------------------
+
+class TestSkillPrefixWriteFileTool:
+
+    # -- helpers ----------------------------------------------------------
+
+    @pytest.fixture()
+    def skills_dir(self, tmp_path):
+        d = tmp_path / "skills"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    # -- basic prefix (legacy style: "dreamed-") --------------------------
+
+    @pytest.mark.asyncio
+    async def test_basic_prefix(self, tmp_path, skills_dir):
+        """Simple prefix like 'dreamed-' still works."""
+        tool = SkillPrefixWriteFileTool(
+            skill_prefix="dreamed",
+            workspace=tmp_path,
+            allowed_dir=skills_dir,
+        )
+        result = await tool.execute(
+            path="skills/test-skill/SKILL.md",
+            content="# Test",
+        )
+        assert "Successfully wrote" in result
+        assert (skills_dir / "dreamed-test-skill" / "SKILL.md").exists()
+
+    # -- composite prefix with double-dash (new style: "dreamed--<algo>-") -
+
+    @pytest.mark.asyncio
+    async def test_composite_prefix_with_double_dash(self, tmp_path, skills_dir):
+        """Composite prefix 'dreamed--naive_memory-' correctly rewrites path."""
+        tool = SkillPrefixWriteFileTool(
+            skill_prefix="dreamed--naive_memory",
+            workspace=tmp_path,
+            allowed_dir=skills_dir,
+        )
+        result = await tool.execute(
+            path="skills/test-skill/SKILL.md",
+            content="# Test",
+        )
+        assert "Successfully wrote" in result
+        assert (skills_dir / "dreamed--naive_memory-test-skill" / "SKILL.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_composite_prefix_hermes_style(self, tmp_path, skills_dir):
+        """Composite prefix 'hermes--mastra_om_memory-' works as well."""
+        tool = SkillPrefixWriteFileTool(
+            skill_prefix="hermes--mastra_om_memory",
+            workspace=tmp_path,
+            allowed_dir=skills_dir,
+        )
+        result = await tool.execute(
+            path="skills/my-skill/SKILL.md",
+            content="# Test",
+        )
+        assert "Successfully wrote" in result
+        assert (skills_dir / "hermes--mastra_om_memory-my-skill" / "SKILL.md").exists()
+
+    # -- already has prefix (idempotent) -----------------------------------
+
+    @pytest.mark.asyncio
+    async def test_prefix_already_present(self, tmp_path, skills_dir):
+        """If the directory name already starts with the prefix, do not double-prefix."""
+        tool = SkillPrefixWriteFileTool(
+            skill_prefix="dreamed",
+            workspace=tmp_path,
+            allowed_dir=skills_dir,
+        )
+        result = await tool.execute(
+            path="skills/dreamed-test-skill/SKILL.md",
+            content="# Test",
+        )
+        assert "Successfully wrote" in result
+        assert (skills_dir / "dreamed-test-skill" / "SKILL.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_composite_prefix_already_present(self, tmp_path, skills_dir):
+        """Composite prefix already present - no double prefixing."""
+        tool = SkillPrefixWriteFileTool(
+            skill_prefix="dreamed--naive_memory",
+            workspace=tmp_path,
+            allowed_dir=skills_dir,
+        )
+        result = await tool.execute(
+            path="skills/dreamed--naive_memory-test-skill/SKILL.md",
+            content="# Test",
+        )
+        assert "Successfully wrote" in result
+        assert (skills_dir / "dreamed--naive_memory-test-skill" / "SKILL.md").exists()
+
+    # -- prefix with scripts sub-path -------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_composite_prefix_with_scripts_subpath(self, tmp_path, skills_dir):
+        """Composite prefix also works for scripts/ subdirectory."""
+        tool = SkillPrefixWriteFileTool(
+            skill_prefix="dreamed--hindsight_memory",
+            workspace=tmp_path,
+            allowed_dir=skills_dir,
+        )
+        result = await tool.execute(
+            path="skills/my-skill/scripts/tool.py",
+            content="print('hello')",
+        )
+        assert "Successfully wrote" in result
+        assert (skills_dir / "dreamed--hindsight_memory-my-skill" / "scripts" / "tool.py").exists()
+
+    # -- non-skills path is NOT rewritten ---------------------------------
+
+    @pytest.mark.asyncio
+    async def test_non_skills_path_not_rewritten(self, tmp_path, skills_dir):
+        """Prefix enforcement only applies under skills/."""
+        tool = SkillPrefixWriteFileTool(
+            skill_prefix="dreamed--naive_memory",
+            workspace=tmp_path,
+            allowed_dir=tmp_path,  # allow writing anywhere
+        )
+        result = await tool.execute(
+            path="README.md",
+            content="# Test",
+        )
+        assert "Successfully wrote" in result
+        assert (tmp_path / "README.md").exists()

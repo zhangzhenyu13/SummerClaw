@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
+from nanobot.memory.migrate import maybe_migrate_legacy_files
+
 # ---------------------------------------------------------------------------
 # Pure-Python cosine similarity (avoids numpy dependency for basic ops)
 # ---------------------------------------------------------------------------
@@ -240,11 +242,18 @@ class Mem0V3Store:
         workspace: Path,
         *,
         entity_similarity_threshold: float = _DEFAULT_ENTITY_SIMILARITY_THRESHOLD,
+        algo_name: str | None = None,
     ):
         self.workspace = Path(workspace) if not isinstance(workspace, Path) else workspace
-        self.memory_dir = self.workspace / "memory"
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.entity_similarity_threshold = entity_similarity_threshold
+
+        if algo_name:
+            self._algo_name = algo_name
+            self.memory_dir = self.workspace / "memory" / algo_name
+        else:
+            self._algo_name = None
+            self.memory_dir = self.workspace / "memory"
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
 
         # File paths
         self._memories_path = self.memory_dir / "mem0v3_memories.json"
@@ -252,9 +261,32 @@ class Mem0V3Store:
         self._bm25_path = self.memory_dir / "mem0v3_bm25.json"
         self._db_path = self.memory_dir / "mem0v3_messages.db"
         self._memory_md_path = self.memory_dir / "MEMORY.md"
+        self.memory_file = self._memory_md_path
+        self.history_file = self.memory_dir / "history.jsonl"
+
+        # Migrate legacy shared files if needed
+        if algo_name:
+            self._migrate_from_legacy()
 
         # In-memory state
         self._memories: dict[str, dict] = {}   # memory_id -> record
+
+    def _migrate_from_legacy(self) -> None:
+        """Migrate data from the legacy shared location to the algorithm-specific dir."""
+        old_memory_dir = self.workspace / "memory"
+        maybe_migrate_legacy_files(
+            memory_dir=self.memory_dir,
+            old_memory_dir=old_memory_dir,
+            old_workspace=self.workspace,
+            files=[
+                "mem0v3_memories.json",
+                "mem0v3_entities.json",
+                "mem0v3_bm25.json",
+                "mem0v3_messages.db",
+                "MEMORY.md",
+                "history.jsonl",
+            ],
+        )
         self._entities: dict[str, dict] = {}   # entity_id -> record
         self._bm25 = BM25Index()
         self._messages = MessageLog(str(self._db_path))

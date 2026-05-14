@@ -84,7 +84,7 @@ class Nanobot:
             unified_session=defaults.unified_session,
             disabled_skills=defaults.disabled_skills,
             session_ttl_minutes=defaults.session_ttl_minutes,
-            plan_and_solve=defaults.plan_and_solve,
+            execution_mode=defaults.execution_mode,
             max_subagent_depth=defaults.max_subagent_depth,
             max_replan_iterations=defaults.max_replan_iterations,
             search_enhanced_planning_config=defaults.search_enhanced_planning,

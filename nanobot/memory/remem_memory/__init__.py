@@ -71,7 +71,7 @@ class ReMeMemoryAlgorithm(MemoryAlgorithm):
         finally:
             logger.add(sys.stderr, level="INFO", colorize=True)
 
-        store = ReMeStore(reme_light=reme_light, workspace=workspace)
+        store = ReMeStore(reme_light=reme_light, workspace=workspace, algo_name=self.name)
 
         consolidator = ReMeConsolidator(
             store=store,
@@ -94,6 +94,7 @@ class ReMeMemoryAlgorithm(MemoryAlgorithm):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
         )
 
         auto_compact = ReMeAutoCompact(

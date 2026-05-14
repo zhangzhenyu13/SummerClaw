@@ -84,6 +84,7 @@ class Mem0V3Dream:
         max_iterations: int = 15,
         max_tool_result_chars: int = 16_000,
         annotate_line_ages: bool = True,
+        algo_name: str = "mem0v3_memory",
     ):
         self.store = store
         self.provider = provider
@@ -92,6 +93,7 @@ class Mem0V3Dream:
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.annotate_line_ages = annotate_line_ages
+        self._algo_name = algo_name
         self._runner = AgentRunner(provider)
         self._tools = self._build_tools()
 
@@ -106,7 +108,7 @@ class Mem0V3Dream:
         tools.register(EditFileTool(workspace=workspace, allowed_dir=workspace))
         skills_dir = workspace / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
-        tools.register(SkillPrefixWriteFileTool(skill_prefix="dreamed-", workspace=workspace))
+        tools.register(SkillPrefixWriteFileTool(skill_prefix=f"dreamed--{self._algo_name}", workspace=workspace, allowed_dir=skills_dir))
         return tools
 
     async def run(self) -> dict[str, Any]:
@@ -168,7 +170,7 @@ Use read_file to check current state, then use edit_file for targeted changes.
 If the analysis suggests a reusable skill, create it under skills/dreamed-<name>/SKILL.md.
 
 ## Key Files
-- memory/MEMORY.md — the main memory file to edit
+- memory/{self._algo_name}/MEMORY.md — the main memory file to edit
 - skills/dreamed-*/SKILL.md — skills to create (if applicable)
 """
         spec = AgentRunSpec(

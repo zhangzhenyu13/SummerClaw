@@ -1,7 +1,7 @@
 """Integration tests verifying the planning auto-skip mechanism end-to-end.
 
 Tests that complex tasks enter the planner while simple tasks skip it,
-using a mocked AgentLoop with plan_and_solve=True and the LLM-based
+using a mocked AgentLoop with execution_mode='auto' and the LLM-based
 complexity evaluator.
 
 Uses loguru's own StringIO sink to capture logs.
@@ -34,7 +34,7 @@ def _capture_loguru():
     return buf, handler_id
 
 
-def _make_loop(tmp_path: Path, *, plan_and_solve: bool = True):
+def _make_loop(tmp_path: Path, *, execution_mode: str = "auto"):
     """Create a minimal AgentLoop with mocked dependencies.
 
     The complexity evaluator's LLM call is also mocked — it returns
@@ -65,7 +65,7 @@ def _make_loop(tmp_path: Path, *, plan_and_solve: bool = True):
         MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(
             bus=bus, provider=provider, workspace=tmp_path,
-            plan_and_solve=plan_and_solve,
+            execution_mode=execution_mode,
             max_iterations=2,
         )
     return loop, bus, provider
@@ -309,9 +309,9 @@ class TestPhase2Integration:
         )
 
     @pytest.mark.asyncio
-    async def test_planning_disabled_when_flag_off(self, tmp_path):
-        """When plan_and_solve=False, no evaluation happens at all."""
-        loop, bus, provider = _make_loop(tmp_path, plan_and_solve=False)
+    async def test_planning_disabled_when_mode_simple(self, tmp_path):
+        """When execution_mode='simple', no evaluation happens at all."""
+        loop, bus, provider = _make_loop(tmp_path, execution_mode="simple")
 
         buf, hid = _capture_loguru()
         try:

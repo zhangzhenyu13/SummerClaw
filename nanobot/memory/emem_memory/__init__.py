@@ -111,6 +111,7 @@ class EMemMemoryAlgorithm(MemoryAlgorithm):
             workspace=workspace,
             embedding_model=embedder,
             batch_size=self.config.embedding_batch_size,
+            algo_name=self.name,
         )
 
         # 3. EDU extractor (LLM-based OpenIE)
@@ -158,6 +159,7 @@ class EMemMemoryAlgorithm(MemoryAlgorithm):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
         )
 
         # 8. AutoCompact (idle session compression)

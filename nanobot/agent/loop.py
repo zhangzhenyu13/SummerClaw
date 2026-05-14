@@ -130,6 +130,62 @@ class _LoopHook(AgentHook):
         return self._loop._strip_think(content)
 
 
+# ---------------------------------------------------------------------------
+# Mode prefix parsing — detects /simple, /plan, /search-plan, /auto prefixes
+# ---------------------------------------------------------------------------
+
+_MODE_PREFIX_MAP: dict[str, str] = {
+    "/simple": "simple",
+    "/plan": "plan",
+    "/search-plan": "search-plan",
+    "/auto": "auto",
+}
+# Sorted by length descending so /search-plan is checked before /plan etc.
+_MODE_PREFIX_KEYS = sorted(_MODE_PREFIX_MAP.keys(), key=len, reverse=True)
+
+
+def _parse_mode_prefix(text: str) -> tuple[str, str]:
+    """Detect mode prefix in message text and return (mode, remaining_text).
+
+    Prefixes can be followed by:
+    - A space (e.g. ``/plan Build a REST API``)
+    - A non-ASCII-letter character like a Chinese character (e.g. ``/plan那个``)
+    - End of string (e.g. ``/plan``)
+
+    ASCII letters immediately after the prefix (e.g. ``/planetary``) are
+    NOT treated as a mode prefix to avoid false positives.
+
+    Returns:
+        (mode, text) — mode is the resolved mode name (empty string if no
+        prefix found), text is the task content with the prefix stripped.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return "", text
+
+    for prefix in _MODE_PREFIX_KEYS:
+        if stripped == prefix:
+            return _MODE_PREFIX_MAP[prefix], text
+
+        if not stripped.startswith(prefix):
+            continue
+
+        after = stripped[len(prefix):]
+        # Guard: if an ASCII letter immediately follows the prefix
+        # (e.g. /planetary), it is NOT a mode prefix.
+        if after and after[0].isalpha() and after[0].isascii():
+            continue
+
+        # Allowed: whitespace, Chinese/emoji/punctuation, or any
+        # non-ASCII-letter character right after the prefix.
+        rest = after.lstrip()
+        if not rest:
+            return _MODE_PREFIX_MAP[prefix], text
+        return _MODE_PREFIX_MAP[prefix], rest
+
+    return "", text
+
+
 class AgentLoop:
     """
     The agent loop is the core processing engine.
@@ -168,7 +224,7 @@ class AgentLoop:
         hooks: list[AgentHook] | None = None,
         unified_session: bool = False,
         disabled_skills: list[str] | None = None,
-        plan_and_solve: bool = False,
+        execution_mode: str = "auto",
         max_subagent_depth: int = 0,
         max_replan_iterations: int = 0,
         search_enhanced_planning_config: "SearchEnhancedPlanningConfig | None" = None,
@@ -310,18 +366,28 @@ class AgentLoop:
             task_registry=self._task_registry,
             proxy_pool=self._proxy_pool,
         )
-        # Plan-and-Solve: create a TaskPlanner when enabled
-        self._plan_and_solve = plan_and_solve
+        # Execution mode: resolve effective mode (backward-compatible with legacy plan_and_solve)
+        self._execution_mode = self._resolve_execution_mode(execution_mode)
         self._max_replan_iterations = max_replan_iterations
-        if plan_and_solve:
-            from nanobot.agent.planner import TaskPlanner
-            self._planner: TaskPlanner | None = TaskPlanner(
-                provider=provider,
-                model=self.model,
-                max_tool_result_chars=self.max_tool_result_chars,
-                max_subagent_depth=max_subagent_depth,
-            )
-            # Plan-and-Solve: create LLM-based complexity evaluator
+
+        # Planner / ComplexityEvaluator / SearchEnhancedPlanner creation
+        # Always create the planner — it is needed when any mode may trigger
+        # planning (auto, plan, search-plan).  Per-message prefixes (/plan,
+        # /search-plan) can override the config default at runtime, so the
+        # planner must exist even when the default config says "simple".
+        _needs_complexity = self._execution_mode == "auto"
+
+        # Always instantiate the TaskPlanner — per-message prefixes may
+        # override the config default, so the planner must always be available.
+        from nanobot.agent.planner import TaskPlanner
+        self._planner: TaskPlanner | None = TaskPlanner(
+            provider=provider,
+            model=self.model,
+            max_tool_result_chars=self.max_tool_result_chars,
+            max_subagent_depth=max_subagent_depth,
+        )
+
+        if _needs_complexity:
             self._complexity_evaluator: LLMComplexityEvaluator | None = (
                 LLMComplexityEvaluator(
                     provider=provider,
@@ -330,10 +396,10 @@ class AgentLoop:
                 )
             )
         else:
-            self._planner = None
             self._complexity_evaluator = None
-        # Plan-and-Solve: create a TaskEvaluator for closed-loop replanning
-        if plan_and_solve and max_replan_iterations > 0:
+
+        # TaskEvaluator for closed-loop replanning: only when planner exists and replan enabled
+        if self._planner is not None and max_replan_iterations > 0:
             from nanobot.agent.evaluator import TaskEvaluator
             self._evaluator: TaskEvaluator | None = TaskEvaluator(
                 provider=provider,
@@ -342,26 +408,25 @@ class AgentLoop:
             )
         else:
             self._evaluator = None
-        # Plan-and-Solve: create SearchEnhancedPlanner when enabled
+
+        # SearchEnhancedPlanner (plan + web search augmentation)
+        # Always create it when the planner exists — per-message prefixes
+        # (/search-plan) can override the config default at runtime.
         self._search_planner: "SearchEnhancedPlanner | None" = None
-        if (
-            plan_and_solve
-            and self._planner is not None
-            and search_enhanced_planning_config is not None
-            and search_enhanced_planning_config.enable
-        ):
+        if self._planner is not None:
             from nanobot.agent.search_planner import SearchEnhancedPlanner
+            _sep_cfg = search_enhanced_planning_config
             self._search_planner = SearchEnhancedPlanner(
                 planner=self._planner,
                 provider=provider,
                 model=self.model,
                 max_tool_result_chars=self.max_tool_result_chars,
                 tools=self.tools,
-                max_results=search_enhanced_planning_config.max_results,
-                timeout=search_enhanced_planning_config.timeout,
-                max_purified_chars=search_enhanced_planning_config.max_purified_chars,
-                search_on_replan=search_enhanced_planning_config.search_on_replan,
-                web_search_backend=search_enhanced_planning_config.web_search_backend,
+                max_results=_sep_cfg.max_results if _sep_cfg else 5,
+                timeout=_sep_cfg.timeout if _sep_cfg else 15,
+                max_purified_chars=_sep_cfg.max_purified_chars if _sep_cfg else 2000,
+                search_on_replan=_sep_cfg.search_on_replan if _sep_cfg else False,
+                web_search_backend=_sep_cfg.web_search_backend if _sep_cfg else "auto",
                 reasoning_effort=provider.generation.reasoning_effort,
             )
         self._unified_session = unified_session
@@ -397,6 +462,7 @@ class AgentLoop:
                 workspace=workspace,
                 max_iterations=skill_autogen_config.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
+                memory_algorithm_name=self.memory_algorithm_name,
             )
         self._register_default_tools()
         # Patch consolidator callbacks now that context and tools are ready
@@ -409,9 +475,9 @@ class AgentLoop:
         self._current_iteration: int = 0
         self.commands = CommandRouter()
         register_builtin_commands(self.commands)
-        # Log active Plan-and-Solve feature status
-        _features = []
-        if plan_and_solve:
+        # Log active execution mode and feature status
+        _features = [f"mode={self._execution_mode}"]
+        if self._planner is not None:
             _features.append("plan-and-solve")
             if self._evaluator is not None:
                 _features.append(f"evaluation(max_replan={max_replan_iterations})")
@@ -836,6 +902,21 @@ class AgentLoop:
             self._schedule_background(self._proxy_pool.stop())
         logger.info("Agent loop stopping")
 
+    @staticmethod
+    def _resolve_execution_mode(execution_mode: str) -> str:
+        """Resolve the effective execution mode, normalizing legacy values.
+
+        Legacy 'plan_and_solve' boolean is no longer passed to __init__.
+        All callers pass execution_mode as a string from config.
+        """
+        mode = (execution_mode or "auto").strip().lower()
+        if mode in ("simple", "plan", "search-plan", "auto"):
+            return mode
+        logger.warning(
+            "Unknown execution_mode '{}', falling back to 'auto'", execution_mode,
+        )
+        return "auto"
+
     async def _process_message(
         self,
         msg: InboundMessage,
@@ -918,6 +999,35 @@ class AgentLoop:
         else:
             pending = None
 
+        # Parse mode prefix (/simple, /plan, /search-plan, /auto) before command dispatch.
+        # Mode prefixes are NOT commands — they modify how the task is executed.
+        # If only a prefix is given without a task, show a usage hint.
+        if isinstance(msg.content, str):
+            prefix_mode, mode_stripped = _parse_mode_prefix(msg.content)
+            if prefix_mode:
+                if mode_stripped == msg.content:
+                    # No task after the prefix
+                    return OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=(
+                            f"Usage: `/{prefix_mode} <task>`\n\n"
+                            f"Available modes: `/simple`, `/plan`, `/search-plan`, `/auto`\n"
+                            f"Default mode (config): `{self._execution_mode}`\n\n"
+                            f"Example: `/{prefix_mode} Build a REST API with auth`"
+                        ),
+                    )
+                msg = dataclasses.replace(msg, content=mode_stripped)
+                self._per_message_mode = prefix_mode
+                logger.info(
+                    "ExecutionMode: per-message prefix '/{}', overriding config default '{}'",
+                    prefix_mode, self._execution_mode,
+                )
+            else:
+                self._per_message_mode = ""
+        else:
+            self._per_message_mode = ""
+
         # Slash commands
         raw = msg.content.strip()
         ctx = CommandContext(msg=msg, session=session, key=key, raw=raw, loop=self)
@@ -968,51 +1078,84 @@ class AgentLoop:
             self.sessions.save(session)
             user_persisted_early = True
 
-        # Plan-and-Solve: now that _bus_progress is available, run the planner and
-        # push progress + plan text to the channel before the main loop starts.
-        # Planning is automatically skipped for simple/conversational messages
-        # via LLMComplexityEvaluator (Phase 1 regex pre-filter + Phase 2 LLM).
-        # Only tasks that are semantically complex (multi-step, code generation,
-        # analysis, etc.) will go through the planner.
-        #
-        # Closed-loop design:
-        #   1. [Optional] Search-enhanced pre-planning (Module 8):
-        #      decide → search → purify → inject into planner
-        #   2. Generate initial plan (TaskPlanner)
-        #   3. Execute via _run_agent_loop
-        #   4. Evaluate result → PASS / LOCAL_REPLAN / GLOBAL_REPLAN
-        #   5. If PASS or circuit-breaker hit → break
-        #   6. Otherwise replan (optionally re-search on GLOBAL_REPLAN) and loop
-        #
-        # Only the final iteration's all_msgs is used for _save_turn.
-        # Intermediate iterations do NOT feed pending_queue to avoid race conditions.
-        #
-        # _plan_progress unifies the two modes:
+        # Execution mode decision: resolve the effective mode for this message.
+        # Per-message prefix (/simple, /plan, /search-plan, /auto) overrides config default.
+        effective_mode = self._per_message_mode or self._execution_mode
+
+        # Determine whether to plan and whether to search based on the effective mode.
+        #   simple      → skip planning entirely, go straight to _run_agent_loop
+        #   plan        → always use TaskPlanner (no web search)
+        #   search-plan → always use SearchEnhancedPlanner (plan + web search)
+        #   auto        → use LLMComplexityEvaluator; if complex, optionally search-enhanced
+        _should_plan = effective_mode != "simple" and self._planner is not None
+        _should_search = (
+            effective_mode == "search-plan"
+            or (
+                effective_mode == "auto"
+                and self._search_planner is not None
+            )
+        )
+
+        if _should_plan and effective_mode != "auto":
+            # Forced plan/search-plan mode: bypass complexity evaluator, always plan.
+            pass
+        elif effective_mode == "auto" and self._planner is not None:
+            # Auto mode: let the complexity evaluator decide.
+            _should_plan = isinstance(msg.content, str) and await self._complexity_evaluator.evaluate(
+                msg.content, channel=msg.channel, chat_id=msg.chat_id,
+            )
+            logger.info(
+                "LLMComplexityEvaluator: result → {} ({} planning)",
+                "COMPLEX" if _should_plan else "SIMPLE",
+                "triggering" if _should_plan else "skipping",
+            )
+            if _should_plan and self._search_planner is not None:
+                _should_search = True
+
+        # _plan_progress unifies the two progress callbacks:
         #   - process_direct (single CLI msg): on_progress=_cli_progress → printed directly
         #   - _dispatch (bus-driven: interactive/serve): on_progress=None → _bus_progress → bus
         _plan_progress = on_progress or _bus_progress
-        if (
-            self._planner is not None
-            and isinstance(msg.content, str)
-            and await self._complexity_evaluator.evaluate(
-                msg.content, channel=msg.channel, chat_id=msg.chat_id,
-            )
-        ):
+
+        # Send mode hint to channel and log
+        _mode_source = "prefix" if self._per_message_mode else "config"
+        _mode_labels: dict[str, str] = {
+            "simple": "⚡ Simple mode — executing directly",
+            "plan": "📋 Plan mode — generating execution plan...",
+            "search-plan": "🔍 Search-plan mode — searching web + generating plan...",
+            "auto": "🤔 Auto mode — evaluating task complexity...",
+        }
+        _mode_hint = _mode_labels.get(effective_mode, f"Mode: {effective_mode}")
+        await _plan_progress(_mode_hint)
+        logger.info(
+            "ExecutionMode: mode={}, should_plan={}, should_search={} (source={})",
+            effective_mode, _should_plan, _should_search, _mode_source,
+        )
+
+        if _should_plan:
             plan_text: str | None = None
             _search_info_cache: str | None = None  # cached purified info for GLOBAL_REPLAN reuse
             try:
-                if self._search_planner is not None:
+                if _should_search and self._search_planner is not None:
                     # Search-enhanced planning: decide → search agent → plan
+                    # In search-plan mode, force search (skip the decide step internally).
+                    _force_search = (effective_mode == "search-plan")
+                    logger.info(
+                        "SearchEnhancedPlanner: starting (force_search={}, task={} chars)",
+                        _force_search, len(msg.content),
+                    )
                     sep_result = await self._search_planner.plan(
                         task=msg.content,
                         channel=msg.channel,
                         chat_id=msg.chat_id,
                         context_summary=pending,
                         progress_callback=_plan_progress,
+                        force_search=_force_search,
                     )
                     plan_text = sep_result.plan_text
                     _search_info_cache = sep_result.purified_info
                 else:
+                    logger.info("TaskPlanner: generating execution plan (no web search)")
                     await _plan_progress("⏳ Generating execution plan...")
                     plan_text = await self._planner.plan(
                         task=msg.content,
@@ -1025,6 +1168,8 @@ class AgentLoop:
                         "Plan-and-Solve: plan injected (session={}, {} chars)",
                         key, len(plan_text),
                     )
+                    plan_preview = plan_text[:200].replace("\n", "\\n")
+                    logger.info("Plan-and-Solve: plan preview: {}", plan_preview)
                     await _plan_progress("📋 **Execution Plan**\n\n" + plan_text)
             except Exception as _plan_err:
                 logger.warning("Plan-and-Solve: planning failed, continuing without plan: {}", _plan_err)
@@ -1162,6 +1307,9 @@ class AgentLoop:
                     "Plan-and-Solve: planning skipped — task classified as simple "
                     "(session={}, {} chars): {}",
                     key, len(msg.content.strip()), msg.content[:120],
+                )
+                await (on_progress or _bus_progress)(
+                    "⏩ Task classified as simple — executing directly"
                 )
             # Standard single-pass execution
             final_content, _, all_msgs, stop_reason, had_injections = await self._run_agent_loop(

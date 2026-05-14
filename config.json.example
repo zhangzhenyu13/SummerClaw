@@ -3,6 +3,9 @@
     "defaults": {
       "workspace": "~/.nanobot/workspace",
       "plan_and_solve": true,
+      "_plan_and_solve_note": "← DEPRECATED. Use executionMode instead. If true (legacy), maps to 'auto'.",
+      "executionMode": "auto",
+      "_executionMode_note": "← 'simple' (direct ReAct) | 'plan' (always plan, no search) | 'search-plan' (plan + web search) | 'auto' (LLM auto-detection, default)",
       "search_enhanced_planning": {
         "enable": true,
         "max_results": 5,

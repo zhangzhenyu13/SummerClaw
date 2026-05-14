@@ -27,24 +27,68 @@ class ReMeStore:
         reme_light: Any,
         workspace: Path,
         max_history_entries: int = _DEFAULT_MAX_HISTORY,
+        algo_name: str | None = None,
     ):
         self.reme_light = reme_light
         self.workspace = workspace
         self.max_history_entries = max_history_entries
-        self.memory_dir = workspace / "memory"
+
+        if algo_name:
+            self._algo_name = algo_name
+            self.memory_dir = workspace / "memory" / algo_name
+        else:
+            self._algo_name = None
+            self.memory_dir = workspace / "memory"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._history_file = self.memory_dir / "remem_history.jsonl"
         self._cursor_file = self.memory_dir / ".remem_cursor"
         self._dream_cursor_file = self.memory_dir / ".remem_dream_cursor"
 
         # File paths for SOUL.md and USER.md (interop with Dream pipeline)
-        self.soul_file = workspace / "SOUL.md"
-        self.user_file = workspace / "USER.md"
+        if algo_name:
+            self.soul_file = self.memory_dir / "SOUL.md"
+            self.user_file = self.memory_dir / "USER.md"
+            # MEMORY.md is also in algorithm dir
+            self._memory_file = self.memory_dir / "MEMORY.md"
+        else:
+            self.soul_file = workspace / "SOUL.md"
+            self.user_file = workspace / "USER.md"
+            self._memory_file = self.workspace / "MEMORY.md"
+
+        self.memory_file = self._memory_file
+        self.history_file = self._history_file
 
         # Git integration for line age tracking and auto-commit
-        self._git = GitStore(workspace, tracked_files=[
-            "SOUL.md", "USER.md", "MEMORY.md",
-        ])
+        self._git = GitStore(
+            workspace,
+            tracked_files=[
+                f"memory/{algo_name}/SOUL.md" if algo_name else "SOUL.md",
+                f"memory/{algo_name}/USER.md" if algo_name else "USER.md",
+                f"memory/{algo_name}/MEMORY.md" if algo_name else "MEMORY.md",
+            ],
+        )
+
+        # Migrate legacy shared files if needed
+        if algo_name:
+            self._migrate_from_legacy()
+
+    def _migrate_from_legacy(self) -> None:
+        """Migrate data from the legacy shared location to the algorithm-specific dir."""
+        from nanobot.memory.migrate import maybe_migrate_legacy_files
+        old_memory_dir = self.workspace / "memory"
+        maybe_migrate_legacy_files(
+            memory_dir=self.memory_dir,
+            old_memory_dir=old_memory_dir,
+            old_workspace=self.workspace,
+            files=[
+                "remem_history.jsonl",
+                "MEMORY.md",
+                "SOUL.md",
+                "USER.md",
+                ".remem_cursor",
+                ".remem_dream_cursor",
+            ],
+        )
 
     @property
     def git(self) -> GitStore:
@@ -54,16 +98,14 @@ class ReMeStore:
 
     def read_memory(self) -> str:
         """Read the long-term memory file (MEMORY.md)."""
-        memory_file = self.workspace / "MEMORY.md"
         try:
-            return memory_file.read_text(encoding="utf-8")
+            return self._memory_file.read_text(encoding="utf-8")
         except FileNotFoundError:
             return ""
 
     def write_memory(self, content: str) -> None:
         """Write the long-term memory file (MEMORY.md)."""
-        memory_file = self.workspace / "MEMORY.md"
-        memory_file.write_text(content, encoding="utf-8")
+        self._memory_file.write_text(content, encoding="utf-8")
 
     # -- SOUL.md -------------------------------------------------------------
 

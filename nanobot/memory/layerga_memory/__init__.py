@@ -91,6 +91,7 @@ class LayergaMemoryAlgorithm(MemoryAlgorithm):
         store = LayergaStore(
             workspace=workspace,
             l1_max_lines=30,
+            algo_name=self.name,
         )
 
         # ------------------------------------------------------------------
@@ -131,6 +132,7 @@ class LayergaMemoryAlgorithm(MemoryAlgorithm):
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
             enable_l1_cleanup=True,
             enable_auto_crystallize=True,
         )

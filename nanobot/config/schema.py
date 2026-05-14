@@ -171,7 +171,17 @@ class AgentDefaults(Base):
         default="naive_memory",
         pattern=r"^[a-z][a-z0-9_]*$",
     )  # Memory algorithm name (must be registered in MemoryRegistry, e.g. "naive_memory")
-    plan_and_solve: bool = False  # Enable plan-and-solve mode: generates a structured plan before execution
+    plan_and_solve: bool = False  # DEPRECATED: Use execution_mode instead. If True (legacy), maps to "auto".
+    execution_mode: Literal["simple", "plan", "search-plan", "auto"] = Field(
+        default="auto",
+        description=(
+            "Task execution mode:\n"
+            "  'simple'      — direct ReAct execution, no planning\n"
+            "  'plan'        — always generate and follow an execution plan (no web search)\n"
+            "  'search-plan' — always perform web search + planning before execution\n"
+            "  'auto'        — auto-detect via LLM complexity evaluator (default)"
+        ),
+    )
     max_subagent_depth: int = Field(
         default=0,
         ge=0,

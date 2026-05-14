@@ -119,7 +119,7 @@ class TestDreamRun:
             content="---\nname: dreamed-test-skill\ndescription: Test\n---\n",
         )
         assert "Successfully wrote" in result
-        assert (store.workspace / "skills" / "dreamed-test-skill" / "SKILL.md").exists()
+        assert (store.workspace / "skills" / "dreamed--mastra_om_memory-test-skill" / "SKILL.md").exists()
 
     async def test_phase1_prompt_includes_line_age_annotations(self, dream, mock_provider, mock_runner, store):
         store.append_history("some event")

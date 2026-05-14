@@ -53,6 +53,7 @@ class SkillAutogen:
         workspace: Path,
         max_iterations: int = 8,
         max_tool_result_chars: int = 16_000,
+        memory_algorithm_name: str = "naive_memory",
     ) -> None:
         self.store = store
         self.provider = provider
@@ -60,6 +61,7 @@ class SkillAutogen:
         self.workspace = workspace
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
+        self._memory_algorithm_name = memory_algorithm_name
 
         # Cumulative tool-call counter (cross-turn)
         self._tool_call_count: int = 0
@@ -90,12 +92,12 @@ class SkillAutogen:
             extra_allowed_dirs=extra_read,
         ))
         # write_file scoped to workspace/skills/ — covers both SKILL.md and scripts/ subdirs
-        # SkillPrefixWriteFileTool hard-codes the "hermes-" prefix so that even if
+        # SkillPrefixWriteFileTool enforces the "hermes--<memory_algo_name>-" prefix so that even if
         # the LLM ignores the prompt naming rule, the directory will always be correct.
         skills_dir = self.workspace / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         tools.register(SkillPrefixWriteFileTool(
-            skill_prefix="hermes",
+            skill_prefix=f"hermes--{self._memory_algorithm_name}",
             workspace=self.workspace,
             allowed_dir=skills_dir,
         ))

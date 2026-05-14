@@ -46,6 +46,7 @@ class ReMeDream:
         max_iterations: int = 10,
         max_tool_result_chars: int = 16_000,
         annotate_line_ages: bool = True,
+        algo_name: str = "remem_memory",
     ):
         self.store = store
         self.reme_light = reme_light
@@ -55,6 +56,7 @@ class ReMeDream:
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.annotate_line_ages = annotate_line_ages
+        self._algo_name = algo_name
 
         self._runner = AgentRunner(provider)
         self._tools = self._build_tools()
@@ -87,7 +89,7 @@ class ReMeDream:
         skills_dir = workspace / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         tools.register(SkillPrefixWriteFileTool(
-            skill_prefix="dreamed",
+            skill_prefix=f"dreamed--{self._algo_name}",
             workspace=workspace,
             allowed_dir=skills_dir,
         ))
@@ -128,7 +130,7 @@ class ReMeDream:
         Each non-blank line whose age exceeds ``_STALE_THRESHOLD_DAYS`` gets a
         suffix like ``← 30d`` indicating days since last modification.
         """
-        file_path = "MEMORY.md"
+        file_path = f"memory/{self._algo_name}/MEMORY.md"
         try:
             ages = self.store.git.line_ages(file_path)
         except Exception:
@@ -264,6 +266,7 @@ class ReMeDream:
                     "agent/dream_phase2.md",
                     strip=True,
                     skill_creator_path=str(skill_creator_path),
+                    memory_rel_path=f"memory/{self._algo_name}/MEMORY.md",
                 ),
             },
             {"role": "user", "content": phase2_prompt},
