@@ -20,19 +20,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.memory.base import MemoryAlgorithm, MemoryComponents
-from nanobot.memory.layerga_memory import LayergaMemoryAlgorithm
-from nanobot.memory.layerga_memory.auto_compact import LayergaAutoCompact
-from nanobot.memory.layerga_memory.consolidator import LayergaConsolidator
-from nanobot.memory.layerga_memory.decision_tree import (
+from summerclaw.memory.base import MemoryAlgorithm, MemoryComponents
+from summerclaw.memory.layerga_memory import LayergaMemoryAlgorithm
+from summerclaw.memory.layerga_memory.auto_compact import LayergaAutoCompact
+from summerclaw.memory.layerga_memory.consolidator import LayergaConsolidator
+from summerclaw.memory.layerga_memory.decision_tree import (
     L0DecisionTree,
     MemoryLayer,
     VerifiedFact,
     ClassificationResult,
 )
-from nanobot.memory.layerga_memory.dream import LayergaDream
-from nanobot.memory.layerga_memory.store import LayergaStore
-from nanobot.agent.runner import AgentRunResult
+from summerclaw.memory.layerga_memory.dream import LayergaDream
+from summerclaw.memory.layerga_memory.store import LayergaStore
+from summerclaw.agent.runner import AgentRunResult
 
 
 # ===================================================================
@@ -1359,7 +1359,7 @@ class TestLayergaAutoCompact:
 
     @pytest.fixture
     def mock_sessions(self, tmp_path: Path) -> MagicMock:
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
 
         sm = MagicMock()
         sm.save = MagicMock()
@@ -1419,7 +1419,7 @@ class TestLayergaAutoCompact:
 
     @pytest.mark.asyncio
     async def test_archive_empty_session(self, auto_compact: LayergaAutoCompact) -> None:
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
 
         session = Session(key="cli:test")
         auto_compact.sessions.get_or_create = MagicMock(return_value=session)
@@ -1430,7 +1430,7 @@ class TestLayergaAutoCompact:
     async def test_archive_stores_l4(
         self, auto_compact: LayergaAutoCompact, store: LayergaStore,
     ) -> None:
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
 
         session = Session(key="cli:test")
         for i in range(12):
@@ -1452,7 +1452,7 @@ class TestLayergaAutoCompact:
     async def test_archive_error_is_caught(
         self, auto_compact: LayergaAutoCompact,
     ) -> None:
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
 
         session = Session(key="cli:test")
         for i in range(12):
@@ -1477,7 +1477,7 @@ class TestLayergaAutoCompact:
             consolidator=mock_consolidator,
             decision_tree=None,
         )
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
         session = Session(key="cli:test")
         loop = asyncio.new_event_loop()
         result = loop.run_until_complete(
@@ -1490,7 +1490,7 @@ class TestLayergaAutoCompact:
     async def test_maybe_trigger_ltm_with_facts(
         self, auto_compact: LayergaAutoCompact,
     ) -> None:
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
 
         session = Session(key="cli:test")
         messages = [
@@ -1673,7 +1673,7 @@ class TestLayergaMemoryAlgorithmRegistry:
     """Test registry integration."""
 
     def test_algorithm_registers_in_registry(self) -> None:
-        from nanobot.memory.registry import MemoryRegistry
+        from summerclaw.memory.registry import MemoryRegistry
 
         registry = MemoryRegistry()
         registry.register(LayergaMemoryAlgorithm())
@@ -1682,7 +1682,7 @@ class TestLayergaMemoryAlgorithmRegistry:
         assert algo.name == "layerga_memory"
 
     def test_algorithm_overrides_registry(self) -> None:
-        from nanobot.memory.registry import MemoryRegistry
+        from summerclaw.memory.registry import MemoryRegistry
 
         registry = MemoryRegistry()
         algo1 = LayergaMemoryAlgorithm()
@@ -1693,13 +1693,13 @@ class TestLayergaMemoryAlgorithmRegistry:
         assert retrieved is algo2
 
     def test_algorithm_coexists_with_other_algorithms(self) -> None:
-        from nanobot.memory.registry import MemoryRegistry
+        from summerclaw.memory.registry import MemoryRegistry
 
         registry = MemoryRegistry()
         registry.register(LayergaMemoryAlgorithm())
 
         # Register naive_memory too — should not conflict
-        from nanobot.memory.naive_memory import NaiveMemoryAlgorithm
+        from summerclaw.memory.naive_memory import NaiveMemoryAlgorithm
         registry.register(NaiveMemoryAlgorithm())
 
         layerga = registry.get("layerga_memory")

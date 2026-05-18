@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.memory.nemori_memory.models import Episode, Message, SemanticMemory
-from nanobot.memory.nemori_memory.store import NemoriStore
+from summerclaw.memory.nemori_memory.models import Episode, Message, SemanticMemory
+from summerclaw.memory.nemori_memory.store import NemoriStore
 
 
 @pytest.fixture

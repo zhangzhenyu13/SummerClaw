@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.tools.ask_user import ASK_USER_PENDING, AskUserTool
-from nanobot.bus.events import OutboundMessage
+from summerclaw.agent.tools.ask_user import ASK_USER_PENDING, AskUserTool
+from summerclaw.bus.events import OutboundMessage
 
 
 # ---------------------------------------------------------------------------

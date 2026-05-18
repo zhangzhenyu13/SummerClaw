@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from nanobot.memory.emem_memory.graph import EMemGraph
+from summerclaw.memory.emem_memory.graph import EMemGraph
 
 
 # ===================================================================

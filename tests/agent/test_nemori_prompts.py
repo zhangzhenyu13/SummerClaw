@@ -2,7 +2,7 @@
 
 import json
 
-from nanobot.memory.nemori_memory.prompts import PromptTemplates
+from summerclaw.memory.nemori_memory.prompts import PromptTemplates
 
 
 # ────────────────────────────────────────────────────────────────────────────

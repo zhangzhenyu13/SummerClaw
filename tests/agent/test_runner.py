@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.config.schema import AgentDefaults
-from nanobot.agent.tools.base import Tool
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.providers.base import LLMResponse, ToolCallRequest
+from summerclaw.config.schema import AgentDefaults
+from summerclaw.agent.tools.base import Tool
+from summerclaw.agent.tools.registry import ToolRegistry
+from summerclaw.providers.base import LLMResponse, ToolCallRequest
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 
@@ -29,16 +29,16 @@ def _make_injection_callback(queue: asyncio.Queue):
 
 
 def _make_loop(tmp_path):
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
+    from summerclaw.agent.loop import AgentLoop
+    from summerclaw.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
+    with patch("summerclaw.agent.loop.ContextBuilder"), \
+         patch("summerclaw.agent.loop.SessionManager"), \
+         patch("summerclaw.agent.loop.SubagentManager") as MockSubMgr:
         MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
     return loop
@@ -46,7 +46,7 @@ def _make_loop(tmp_path):
 
 @pytest.mark.asyncio
 async def test_runner_preserves_reasoning_fields_and_tool_results():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_second_call: list[dict] = []
@@ -103,8 +103,8 @@ async def test_runner_preserves_reasoning_fields_and_tool_results():
 
 @pytest.mark.asyncio
 async def test_runner_calls_hooks_in_order():
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.hook import AgentHook, AgentHookContext
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -179,8 +179,8 @@ async def test_runner_calls_hooks_in_order():
 
 @pytest.mark.asyncio
 async def test_runner_streaming_hook_receives_deltas_and_end_signal():
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.hook import AgentHook, AgentHookContext
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     streamed: list[str] = []
@@ -224,7 +224,7 @@ async def test_runner_streaming_hook_receives_deltas_and_end_signal():
 
 @pytest.mark.asyncio
 async def test_runner_returns_max_iterations_fallback():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
@@ -254,7 +254,7 @@ async def test_runner_returns_max_iterations_fallback():
 
 @pytest.mark.asyncio
 async def test_runner_returns_structured_tool_error():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     provider.chat_with_retry = AsyncMock(return_value=LLMResponse(
@@ -285,7 +285,7 @@ async def test_runner_returns_structured_tool_error():
 
 @pytest.mark.asyncio
 async def test_runner_persists_large_tool_results_for_follow_up_calls(tmp_path):
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_second_call: list[dict] = []
@@ -322,13 +322,13 @@ async def test_runner_persists_large_tool_results_for_follow_up_calls(tmp_path):
     tool_message = next(msg for msg in captured_second_call if msg.get("role") == "tool")
     assert "[tool output persisted]" in tool_message["content"]
     assert "tool-results" in tool_message["content"]
-    assert (tmp_path / ".nanobot" / "tool-results" / "test_runner" / "call_big.txt").exists()
+    assert (tmp_path / ".summerclaw" / "tool-results" / "test_runner" / "call_big.txt").exists()
 
 
 def test_persist_tool_result_prunes_old_session_buckets(tmp_path):
-    from nanobot.utils.helpers import maybe_persist_tool_result
+    from summerclaw.utils.helpers import maybe_persist_tool_result
 
-    root = tmp_path / ".nanobot" / "tool-results"
+    root = tmp_path / ".summerclaw" / "tool-results"
     old_bucket = root / "old_session"
     recent_bucket = root / "recent_session"
     old_bucket.mkdir(parents=True)
@@ -355,9 +355,9 @@ def test_persist_tool_result_prunes_old_session_buckets(tmp_path):
 
 
 def test_persist_tool_result_leaves_no_temp_files(tmp_path):
-    from nanobot.utils.helpers import maybe_persist_tool_result
+    from summerclaw.utils.helpers import maybe_persist_tool_result
 
-    root = tmp_path / ".nanobot" / "tool-results"
+    root = tmp_path / ".summerclaw" / "tool-results"
     maybe_persist_tool_result(
         tmp_path,
         "current:session",
@@ -371,16 +371,16 @@ def test_persist_tool_result_leaves_no_temp_files(tmp_path):
 
 
 def test_persist_tool_result_logs_cleanup_failures(monkeypatch, tmp_path):
-    from nanobot.utils.helpers import maybe_persist_tool_result
+    from summerclaw.utils.helpers import maybe_persist_tool_result
 
     warnings: list[str] = []
 
     monkeypatch.setattr(
-        "nanobot.utils.helpers._cleanup_tool_result_buckets",
+        "summerclaw.utils.helpers._cleanup_tool_result_buckets",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("busy")),
     )
     monkeypatch.setattr(
-        "nanobot.utils.helpers.logger.warning",
+        "summerclaw.utils.helpers.logger.warning",
         lambda message, *args: warnings.append(message.format(*args)),
     )
 
@@ -398,7 +398,7 @@ def test_persist_tool_result_logs_cleanup_failures(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_runner_replaces_empty_tool_result_with_marker():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_second_call: list[dict] = []
@@ -436,7 +436,7 @@ async def test_runner_replaces_empty_tool_result_with_marker():
 
 @pytest.mark.asyncio
 async def test_runner_uses_raw_messages_when_context_governance_fails():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_messages: list[dict] = []
@@ -470,7 +470,7 @@ async def test_runner_uses_raw_messages_when_context_governance_fails():
 @pytest.mark.asyncio
 async def test_runner_retries_empty_final_response_with_summary_prompt():
     """Empty responses get 2 silent retries before finalization kicks in."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     calls: list[dict] = []
@@ -515,8 +515,8 @@ async def test_runner_retries_empty_final_response_with_summary_prompt():
 @pytest.mark.asyncio
 async def test_runner_uses_specific_message_after_empty_finalization_retry():
     """After silent retries + finalization all return empty, stop_reason is empty_final_response."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
 
     provider = MagicMock()
 
@@ -547,7 +547,7 @@ async def test_runner_empty_response_does_not_break_tool_chain():
     Sequence: tool_call → empty → tool_call → final text.
     The runner should recover via silent retry and complete normally.
     """
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     call_count = 0
@@ -601,7 +601,7 @@ async def test_runner_empty_response_does_not_break_tool_chain():
 
 
 def test_snip_history_drops_orphaned_tool_results_from_trimmed_slice(monkeypatch):
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     tools = MagicMock()
@@ -628,7 +628,7 @@ def test_snip_history_drops_orphaned_tool_results_from_trimmed_slice(monkeypatch
         context_block_limit=100,
     )
 
-    monkeypatch.setattr("nanobot.agent.runner.estimate_prompt_tokens_chain", lambda *_args, **_kwargs: (500, None))
+    monkeypatch.setattr("summerclaw.agent.runner.estimate_prompt_tokens_chain", lambda *_args, **_kwargs: (500, None))
     token_sizes = {
         "old user": 120,
         "tool call": 120,
@@ -637,7 +637,7 @@ def test_snip_history_drops_orphaned_tool_results_from_trimmed_slice(monkeypatch
         "system": 0,
     }
     monkeypatch.setattr(
-        "nanobot.agent.runner.estimate_message_tokens",
+        "summerclaw.agent.runner.estimate_message_tokens",
         lambda msg: token_sizes.get(str(msg.get("content")), 40),
     )
 
@@ -652,7 +652,7 @@ def test_snip_history_drops_orphaned_tool_results_from_trimmed_slice(monkeypatch
 
 @pytest.mark.asyncio
 async def test_runner_keeps_going_when_tool_result_persistence_fails():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_second_call: list[dict] = []
@@ -675,7 +675,7 @@ async def test_runner_keeps_going_when_tool_result_persistence_fails():
     tools.execute = AsyncMock(return_value="tool result")
 
     runner = AgentRunner(provider)
-    with patch("nanobot.agent.runner.maybe_persist_tool_result", side_effect=RuntimeError("disk full")):
+    with patch("summerclaw.agent.runner.maybe_persist_tool_result", side_effect=RuntimeError("disk full")):
         result = await runner.run(AgentRunSpec(
             initial_messages=[{"role": "user", "content": "do task"}],
             tools=tools,
@@ -734,7 +734,7 @@ class _DelayTool(Tool):
 
 @pytest.mark.asyncio
 async def test_runner_batches_read_only_tools_before_exclusive_work():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     tools = ToolRegistry()
     shared_events: list[str] = []
@@ -772,7 +772,7 @@ async def test_runner_batches_read_only_tools_before_exclusive_work():
 
 @pytest.mark.asyncio
 async def test_runner_does_not_batch_exclusive_read_only_tools():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     tools = ToolRegistry()
     shared_events: list[str] = []
@@ -814,7 +814,7 @@ async def test_runner_does_not_batch_exclusive_read_only_tools():
 
 @pytest.mark.asyncio
 async def test_runner_blocks_repeated_external_fetches():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_final_call: list[dict] = []
@@ -857,7 +857,7 @@ async def test_runner_blocks_repeated_external_fetches():
 @pytest.mark.asyncio
 async def test_runner_blocks_repeated_exec_with_same_command():
     """exec calls with the same command are throttled like web_fetch/web_search."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_final_call: list[dict] = []
@@ -976,7 +976,7 @@ async def test_loop_retries_think_only_final_response(tmp_path):
 async def test_llm_error_not_appended_to_session_messages():
     """When LLM returns finish_reason='error', the error content must NOT be
     appended to the messages list (prevents polluting session history)."""
-    from nanobot.agent.runner import (
+    from summerclaw.agent.runner import (
         AgentRunSpec,
         AgentRunner,
         _PERSISTED_MODEL_ERROR_PLACEHOLDER,
@@ -1010,9 +1010,9 @@ async def test_llm_error_not_appended_to_session_messages():
 async def test_streamed_flag_not_set_on_llm_error(tmp_path):
     """When LLM errors during a streaming-capable channel interaction,
     _streamed must NOT be set so ChannelManager delivers the error."""
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
+    from summerclaw.agent.loop import AgentLoop
+    from summerclaw.bus.events import InboundMessage
+    from summerclaw.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
@@ -1042,10 +1042,10 @@ async def test_streamed_flag_not_set_on_llm_error(tmp_path):
 
 @pytest.mark.asyncio
 async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.agent.runner import _PERSISTED_MODEL_ERROR_PLACEHOLDER
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
+    from summerclaw.agent.loop import AgentLoop
+    from summerclaw.agent.runner import _PERSISTED_MODEL_ERROR_PLACEHOLDER
+    from summerclaw.bus.events import InboundMessage
+    from summerclaw.bus.queue import MessageBus
 
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
@@ -1092,7 +1092,7 @@ async def test_next_turn_after_llm_error_keeps_turn_boundary(tmp_path):
 
 @pytest.mark.asyncio
 async def test_runner_tool_error_sets_final_content():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
 
@@ -1124,8 +1124,8 @@ async def test_runner_tool_error_sets_final_content():
 
 @pytest.mark.asyncio
 async def test_subagent_max_iterations_announces_existing_fallback(tmp_path, monkeypatch):
-    from nanobot.agent.subagent import SubagentManager, SubagentStatus
-    from nanobot.bus.queue import MessageBus
+    from summerclaw.agent.subagent import SubagentManager, SubagentStatus
+    from summerclaw.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
@@ -1145,7 +1145,7 @@ async def test_subagent_max_iterations_announces_existing_fallback(tmp_path, mon
     async def fake_execute(self, **kwargs):
         return "tool result"
 
-    monkeypatch.setattr("nanobot.agent.tools.filesystem.ListDirTool.execute", fake_execute)
+    monkeypatch.setattr("summerclaw.agent.tools.filesystem.ListDirTool.execute", fake_execute)
 
     status = SubagentStatus(task_id="sub-1", label="label", task_description="do task", started_at=time.monotonic())
     await mgr._run_subagent("sub-1", "do task", "label", {"channel": "test", "chat_id": "c1"}, status)
@@ -1160,7 +1160,7 @@ async def test_subagent_max_iterations_announces_existing_fallback(tmp_path, mon
 async def test_runner_accumulates_usage_and_preserves_cached_tokens():
     """Runner should accumulate prompt/completion tokens across iterations
     and preserve cached_tokens from provider responses."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1202,8 +1202,8 @@ async def test_runner_accumulates_usage_and_preserves_cached_tokens():
 @pytest.mark.asyncio
 async def test_runner_passes_cached_tokens_to_hook_context():
     """Hook context.usage should contain cached_tokens."""
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.hook import AgentHook, AgentHookContext
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_usage: list[dict] = []
@@ -1246,7 +1246,7 @@ async def test_runner_passes_cached_tokens_to_hook_context():
 async def test_length_recovery_continues_from_truncated_output():
     """When finish_reason is 'length', runner should insert a continuation
     prompt and retry, stitching partial outputs into the final result."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1285,8 +1285,8 @@ async def test_length_recovery_continues_from_truncated_output():
 async def test_length_recovery_streaming_calls_on_stream_end_with_resuming():
     """During length recovery with streaming, on_stream_end should be called
     with resuming=True so the hook knows the conversation is continuing."""
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.hook import AgentHook, AgentHookContext
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1330,7 +1330,7 @@ async def test_length_recovery_streaming_calls_on_stream_end_with_resuming():
 @pytest.mark.asyncio
 async def test_length_recovery_gives_up_after_max_retries():
     """After _MAX_LENGTH_RECOVERIES attempts the runner should stop retrying."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner, _MAX_LENGTH_RECOVERIES
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner, _MAX_LENGTH_RECOVERIES
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1368,7 +1368,7 @@ async def test_length_recovery_gives_up_after_max_retries():
 @pytest.mark.asyncio
 async def test_backfill_missing_tool_results_inserts_error():
     """Orphaned tool_use (no matching tool_result) should get a synthetic error."""
-    from nanobot.agent.runner import AgentRunner, _BACKFILL_CONTENT
+    from summerclaw.agent.runner import AgentRunner, _BACKFILL_CONTENT
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -1392,7 +1392,7 @@ async def test_backfill_missing_tool_results_inserts_error():
 
 
 def test_drop_orphan_tool_results_removes_unmatched_tool_messages():
-    from nanobot.agent.runner import AgentRunner
+    from summerclaw.agent.runner import AgentRunner
 
     messages = [
         {"role": "system", "content": "system"},
@@ -1429,7 +1429,7 @@ def test_drop_orphan_tool_results_removes_unmatched_tool_messages():
 @pytest.mark.asyncio
 async def test_backfill_noop_when_complete():
     """Complete message chains should not be modified."""
-    from nanobot.agent.runner import AgentRunner
+    from summerclaw.agent.runner import AgentRunner
 
     messages = [
         {"role": "user", "content": "hi"},
@@ -1449,7 +1449,7 @@ async def test_backfill_noop_when_complete():
 
 @pytest.mark.asyncio
 async def test_runner_drops_orphan_tool_results_before_model_request():
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     captured_messages: list[dict] = []
@@ -1489,10 +1489,10 @@ async def test_runner_drops_orphan_tool_results_before_model_request():
 @pytest.mark.asyncio
 async def test_backfill_repairs_model_context_without_shifting_save_turn_boundary(tmp_path):
     """Historical backfill should not duplicate old tail messages on persist."""
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.agent.runner import _BACKFILL_CONTENT
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
+    from summerclaw.agent.loop import AgentLoop
+    from summerclaw.agent.runner import _BACKFILL_CONTENT
+    from summerclaw.bus.events import InboundMessage
+    from summerclaw.bus.queue import MessageBus
 
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
@@ -1574,7 +1574,7 @@ async def test_backfill_repairs_model_context_without_shifting_save_turn_boundar
 @pytest.mark.asyncio
 async def test_runner_backfill_only_mutates_model_context_not_returned_messages():
     """Runner should repair orphaned tool calls for the model without rewriting result.messages."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner, _BACKFILL_CONTENT
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner, _BACKFILL_CONTENT
 
     provider = MagicMock()
     captured_messages: list[dict] = []
@@ -1657,7 +1657,7 @@ async def test_runner_backfill_only_mutates_model_context_not_returned_messages(
 @pytest.mark.asyncio
 async def test_microcompact_replaces_old_tool_results():
     """Tool results beyond _MICROCOMPACT_KEEP_RECENT should be summarized."""
-    from nanobot.agent.runner import AgentRunner, _MICROCOMPACT_KEEP_RECENT
+    from summerclaw.agent.runner import AgentRunner, _MICROCOMPACT_KEEP_RECENT
 
     total = _MICROCOMPACT_KEEP_RECENT + 5
     long_content = "x" * 600
@@ -1685,7 +1685,7 @@ async def test_microcompact_replaces_old_tool_results():
 @pytest.mark.asyncio
 async def test_microcompact_preserves_short_results():
     """Short tool results (< _MICROCOMPACT_MIN_CHARS) should not be replaced."""
-    from nanobot.agent.runner import AgentRunner, _MICROCOMPACT_KEEP_RECENT
+    from summerclaw.agent.runner import AgentRunner, _MICROCOMPACT_KEEP_RECENT
 
     total = _MICROCOMPACT_KEEP_RECENT + 5
     messages: list[dict] = []
@@ -1707,7 +1707,7 @@ async def test_microcompact_preserves_short_results():
 @pytest.mark.asyncio
 async def test_microcompact_skips_non_compactable_tools():
     """Non-compactable tools (e.g. 'message') should never be replaced."""
-    from nanobot.agent.runner import AgentRunner, _MICROCOMPACT_KEEP_RECENT
+    from summerclaw.agent.runner import AgentRunner, _MICROCOMPACT_KEEP_RECENT
 
     total = _MICROCOMPACT_KEEP_RECENT + 5
     long_content = "y" * 1000
@@ -1731,7 +1731,7 @@ async def test_microcompact_skips_non_compactable_tools():
 async def test_runner_tool_error_preserves_tool_results_in_messages():
     """When a tool raises a fatal error, its results must still be appended
     to messages so the session never contains orphan tool_calls (#2943)."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
 
@@ -1791,7 +1791,7 @@ async def test_runner_tool_error_preserves_tool_results_in_messages():
 def test_governance_repairs_orphans_after_snip():
     """After _snip_history clips an assistant+tool_calls, the second
     _drop_orphan_tool_results pass must clean up the resulting orphans."""
-    from nanobot.agent.runner import AgentRunner
+    from summerclaw.agent.runner import AgentRunner
 
     messages = [
         {"role": "system", "content": "system"},
@@ -1826,7 +1826,7 @@ def test_governance_repairs_orphans_after_snip():
 def test_governance_fallback_still_repairs_orphans():
     """When full governance fails, the fallback must still run
     _drop_orphan_tool_results and _backfill_missing_tool_results."""
-    from nanobot.agent.runner import AgentRunner
+    from summerclaw.agent.runner import AgentRunner
 
     # Messages with an orphan tool result (no matching assistant tool_call).
     messages = [
@@ -1846,7 +1846,7 @@ def test_governance_fallback_still_repairs_orphans():
 @pytest.mark.asyncio
 async def test_drain_injections_returns_empty_when_no_callback():
     """No injection_callback → empty list."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     runner = AgentRunner(provider)
@@ -1864,8 +1864,8 @@ async def test_drain_injections_returns_empty_when_no_callback():
 @pytest.mark.asyncio
 async def test_drain_injections_extracts_content_from_inbound_messages():
     """Should extract .content from InboundMessage objects."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     runner = AgentRunner(provider)
@@ -1895,8 +1895,8 @@ async def test_drain_injections_extracts_content_from_inbound_messages():
 @pytest.mark.asyncio
 async def test_drain_injections_passes_limit_to_callback_when_supported():
     """Limit-aware callbacks can preserve overflow in their own queue."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTIONS_PER_TURN
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTIONS_PER_TURN
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     runner = AgentRunner(provider)
@@ -1930,8 +1930,8 @@ async def test_drain_injections_passes_limit_to_callback_when_supported():
 @pytest.mark.asyncio
 async def test_drain_injections_skips_empty_content():
     """Messages with blank content should be filtered out."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     runner = AgentRunner(provider)
@@ -1959,7 +1959,7 @@ async def test_drain_injections_skips_empty_content():
 @pytest.mark.asyncio
 async def test_drain_injections_handles_callback_exception():
     """If the callback raises, return empty list (error is logged)."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     runner = AgentRunner(provider)
@@ -1981,8 +1981,8 @@ async def test_drain_injections_handles_callback_exception():
 @pytest.mark.asyncio
 async def test_checkpoint1_injects_after_tool_execution():
     """Follow-up messages are injected after tool execution, before next LLM call."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2034,9 +2034,9 @@ async def test_checkpoint1_injects_after_tool_execution():
 @pytest.mark.asyncio
 async def test_checkpoint2_injects_after_final_response_with_resuming_stream():
     """After final response, if injections exist, stream_end should get resuming=True."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.hook import AgentHook, AgentHookContext
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2093,8 +2093,8 @@ async def test_checkpoint2_injects_after_final_response_with_resuming_stream():
 @pytest.mark.asyncio
 async def test_checkpoint2_preserves_final_response_in_history_before_followup():
     """A follow-up injected after a final answer must still see that answer in history."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2148,9 +2148,9 @@ async def test_checkpoint2_preserves_final_response_in_history_before_followup()
 @pytest.mark.asyncio
 async def test_loop_injected_followup_preserves_image_media(tmp_path):
     """Mid-turn follow-ups with images should keep multimodal content."""
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
+    from summerclaw.agent.loop import AgentLoop
+    from summerclaw.bus.events import InboundMessage
+    from summerclaw.bus.queue import MessageBus
 
     image_path = tmp_path / "followup.png"
     image_path.write_bytes(base64.b64decode(
@@ -2208,7 +2208,7 @@ async def test_loop_injected_followup_preserves_image_media(tmp_path):
 @pytest.mark.asyncio
 async def test_runner_merges_multiple_injected_user_messages_without_losing_media():
     """Multiple injected follow-ups should not create lossy consecutive user messages."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2271,8 +2271,8 @@ async def test_runner_merges_multiple_injected_user_messages_without_losing_medi
 @pytest.mark.asyncio
 async def test_injection_cycles_capped_at_max():
     """Injection cycles should be capped at _MAX_INJECTION_CYCLES."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTION_CYCLES
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTION_CYCLES
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2312,7 +2312,7 @@ async def test_injection_cycles_capped_at_max():
 @pytest.mark.asyncio
 async def test_no_injections_flag_is_false_by_default():
     """had_injections should be False when no injection callback or no messages."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
 
@@ -2345,7 +2345,7 @@ async def test_pending_queue_cleanup_on_dispatch(tmp_path):
 
     loop.provider.chat_with_retry = chat_with_retry
 
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.bus.events import InboundMessage
 
     msg = InboundMessage(channel="cli", sender_id="u", chat_id="c", content="hello")
     # The queue should not exist before dispatch
@@ -2360,8 +2360,8 @@ async def test_pending_queue_cleanup_on_dispatch(tmp_path):
 @pytest.mark.asyncio
 async def test_followup_routed_to_pending_queue(tmp_path):
     """Unified-session follow-ups should route into the active pending queue."""
-    from nanobot.agent.loop import UNIFIED_SESSION_KEY
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.loop import UNIFIED_SESSION_KEY
+    from summerclaw.bus.events import InboundMessage
 
     loop = _make_loop(tmp_path)
     loop._unified_session = True
@@ -2391,10 +2391,10 @@ async def test_followup_routed_to_pending_queue(tmp_path):
 @pytest.mark.asyncio
 async def test_pending_queue_preserves_overflow_for_next_injection_cycle(tmp_path):
     """Pending queue should leave overflow messages queued for later drains."""
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
-    from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN
+    from summerclaw.agent.loop import AgentLoop
+    from summerclaw.bus.events import InboundMessage
+    from summerclaw.bus.queue import MessageBus
+    from summerclaw.agent.runner import _MAX_INJECTIONS_PER_TURN
 
     bus = MessageBus()
     provider = MagicMock()
@@ -2444,7 +2444,7 @@ async def test_pending_queue_preserves_overflow_for_next_injection_cycle(tmp_pat
 @pytest.mark.asyncio
 async def test_pending_queue_full_falls_back_to_queued_task(tmp_path):
     """QueueFull should preserve the message by dispatching a queued task."""
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.bus.events import InboundMessage
 
     loop = _make_loop(tmp_path)
     loop._dispatch = AsyncMock()  # type: ignore[method-assign]
@@ -2478,7 +2478,7 @@ async def test_dispatch_republishes_leftover_queue_messages(tmp_path):
     the runner exits early (e.g., max_iterations, tool_error) with messages
     still in the queue.
     """
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.bus.events import InboundMessage
 
     loop = _make_loop(tmp_path)
     bus = loop.bus
@@ -2517,8 +2517,8 @@ async def test_dispatch_republishes_leftover_queue_messages(tmp_path):
 @pytest.mark.asyncio
 async def test_drain_injections_on_fatal_tool_error():
     """Pending injections should be drained even when a fatal tool error occurs."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2570,8 +2570,8 @@ async def test_drain_injections_on_fatal_tool_error():
 @pytest.mark.asyncio
 async def test_drain_injections_on_llm_error():
     """Pending injections should be drained when the LLM returns an error finish_reason."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2625,8 +2625,8 @@ async def test_drain_injections_on_llm_error():
 @pytest.mark.asyncio
 async def test_drain_injections_on_empty_final_response():
     """Pending injections should be drained when the runner exits due to empty response."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner, _MAX_EMPTY_RETRIES
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner, _MAX_EMPTY_RETRIES
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2680,8 +2680,8 @@ async def test_drain_injections_on_max_iterations():
     injections are appended to messages but not processed by the LLM.
     The key point is they are consumed from the queue to prevent re-publish.
     """
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2731,9 +2731,9 @@ async def test_drain_injections_on_max_iterations():
 @pytest.mark.asyncio
 async def test_drain_injections_set_flag_when_followup_arrives_after_last_iteration():
     """Late follow-ups drained in max_iterations should still flip had_injections."""
-    from nanobot.agent.hook import AgentHook
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.hook import AgentHook
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2794,8 +2794,8 @@ async def test_drain_injections_set_flag_when_followup_arrives_after_last_iterat
 @pytest.mark.asyncio
 async def test_injection_cycle_cap_on_error_path():
     """Injection cycles should be capped even when every iteration hits an LLM error."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTION_CYCLES
-    from nanobot.bus.events import InboundMessage
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTION_CYCLES
+    from summerclaw.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -2858,7 +2858,7 @@ def test_snip_history_preserves_user_message_after_truncation(monkeypatch):
     - _snip_history activates, keeping only recent assistant/tool pairs.
     - The injected user message is in the truncated prefix and gets lost.
     """
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     tools = MagicMock()
@@ -2868,7 +2868,7 @@ def test_snip_history_preserves_user_message_after_truncation(monkeypatch):
     messages = [
         {"role": "system", "content": "system"},
         {"role": "assistant", "content": "previous reply"},
-        {"role": "user", "content": ".nanobot的同目录"},
+        {"role": "user", "content": ".summerclaw的同目录"},
         {
             "role": "assistant",
             "content": None,
@@ -2894,17 +2894,17 @@ def test_snip_history_preserves_user_message_after_truncation(monkeypatch):
     )
 
     # Make estimate_prompt_tokens_chain report above budget so _snip_history activates.
-    monkeypatch.setattr("nanobot.agent.runner.estimate_prompt_tokens_chain", lambda *_a, **_kw: (500, None))
+    monkeypatch.setattr("summerclaw.agent.runner.estimate_prompt_tokens_chain", lambda *_a, **_kw: (500, None))
     # Make kept window small: only the last 2 messages fit the budget.
     token_sizes = {
         "system": 0,
         "previous reply": 200,
-        ".nanobot的同目录": 80,
+        ".summerclaw的同目录": 80,
         "tool output 1": 80,
         "tool output 2": 80,
     }
     monkeypatch.setattr(
-        "nanobot.agent.runner.estimate_message_tokens",
+        "summerclaw.agent.runner.estimate_message_tokens",
         lambda msg: token_sizes.get(str(msg.get("content")), 100),
     )
 
@@ -2922,7 +2922,7 @@ def test_snip_history_preserves_user_message_after_truncation(monkeypatch):
 def test_snip_history_no_user_at_all_falls_back_gracefully(monkeypatch):
     """Edge case: if non_system has zero user messages, _snip_history should
     still return a valid sequence (not crash or produce system→assistant)."""
-    from nanobot.agent.runner import AgentRunSpec, AgentRunner
+    from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
     provider = MagicMock()
     tools = MagicMock()
@@ -2947,9 +2947,9 @@ def test_snip_history_no_user_at_all_falls_back_gracefully(monkeypatch):
         context_block_limit=100,
     )
 
-    monkeypatch.setattr("nanobot.agent.runner.estimate_prompt_tokens_chain", lambda *_a, **_kw: (500, None))
+    monkeypatch.setattr("summerclaw.agent.runner.estimate_prompt_tokens_chain", lambda *_a, **_kw: (500, None))
     monkeypatch.setattr(
-        "nanobot.agent.runner.estimate_message_tokens",
+        "summerclaw.agent.runner.estimate_message_tokens",
         lambda msg: 100,
     )
 
@@ -2961,7 +2961,7 @@ def test_snip_history_no_user_at_all_falls_back_gracefully(monkeypatch):
     assert any(m.get("role") == "system" for m in trimmed)
     # The _enforce_role_alternation safety net must be able to fix whatever
     # _snip_history returns here — verify it produces a valid sequence.
-    from nanobot.providers.base import LLMProvider
+    from summerclaw.providers.base import LLMProvider
     fixed = LLMProvider._enforce_role_alternation(trimmed)
     non_system = [m for m in fixed if m["role"] != "system"]
     if non_system:

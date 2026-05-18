@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.memory.nemori_memory.models import Episode, Message
-from nanobot.memory.nemori_memory.episode_generator import EpisodeGenerator
+from summerclaw.memory.nemori_memory.models import Episode, Message
+from summerclaw.memory.nemori_memory.episode_generator import EpisodeGenerator
 
 
 @pytest.fixture
@@ -138,13 +138,13 @@ class TestEpisodeGeneratorJsonParsing:
     """JSON response parsing from generator."""
 
     def test_parse_response_plain(self):
-        from nanobot.memory.nemori_memory.episode_generator import EpisodeGenerator
+        from summerclaw.memory.nemori_memory.episode_generator import EpisodeGenerator
         gen = EpisodeGenerator(MagicMock(), "x")
         result = gen._parse_response('{"key": "value"}')
         assert result == {"key": "value"}
 
     def test_parse_response_with_fence(self):
-        from nanobot.memory.nemori_memory.episode_generator import EpisodeGenerator
+        from summerclaw.memory.nemori_memory.episode_generator import EpisodeGenerator
         gen = EpisodeGenerator(MagicMock(), "x")
         result = gen._parse_response('```json\n{"key": "value"}\n```')
         assert result == {"key": "value"}

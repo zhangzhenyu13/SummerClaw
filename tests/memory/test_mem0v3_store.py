@@ -6,8 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
-from nanobot.memory.embedding_store import EmbeddingStore
-from nanobot.memory.mem0v3_memory.store import BM25Index, Mem0V3Store, MessageLog
+from summerclaw.memory.embedding_store import EmbeddingStore
+from summerclaw.memory.mem0v3_memory.store import BM25Index, Mem0V3Store, MessageLog
 
 
 # ============================================================================

@@ -1,14 +1,14 @@
-# Memory in UnionClaw
+# Memory in SummerClaw
 
-UnionClaw's memory is built on a simple belief: memory should feel alive, but it should not feel chaotic.
+SummerClaw's memory is built on a simple belief: memory should feel alive, but it should not feel chaotic.
 
 Good memory is not a pile of notes. It is a quiet system of attention. It notices what is worth keeping, lets go of what no longer needs the spotlight, and turns lived experience into something calm, durable, and useful.
 
-That is the shape of memory in UnionClaw.
+That is the shape of memory in SummerClaw.
 
 ## Pluggable Architecture
 
-UnionClaw inherits nanobot's layered memory design and extends it with a **pluggable memory algorithm** system. Different algorithms implement different strategies for storage, consolidation, and retrieval, all behind a unified `MemoryAlgorithm` interface.
+SummerClaw inherits summerclaw's layered memory design and extends it with a **pluggable memory algorithm** system. Different algorithms implement different strategies for storage, consolidation, and retrieval, all behind a unified `MemoryAlgorithm` interface.
 
 ```
    ┌──────────────────────────────────────────────────┐
@@ -39,7 +39,7 @@ Available algorithms are registered in `MemoryRegistry`. The default is always `
 
 ## The Design
 
-UnionClaw does not treat memory as one giant file.
+SummerClaw does not treat memory as one giant file.
 
 It separates memory into layers, because different kinds of remembering deserve different tools:
 
@@ -52,11 +52,11 @@ This keeps the system light in the moment, but reflective over time.
 
 ## The Flow
 
-Memory moves through UnionClaw in two stages.
+Memory moves through SummerClaw in two stages.
 
 ### Stage 1: Consolidator
 
-When a conversation grows large enough to pressure the context window, UnionClaw does not try to carry every old message forever.
+When a conversation grows large enough to pressure the context window, SummerClaw does not try to carry every old message forever.
 
 Instead, the `Consolidator` summarizes the oldest safe slice of the conversation and appends that summary to `memory/history.jsonl`.
 
@@ -90,7 +90,7 @@ Then it works in two phases:
 1. It studies what is new and what is already known.
 2. It edits the long-term files surgically, not by rewriting everything, but by making the smallest honest change that keeps memory coherent.
 
-This is why UnionClaw's memory is not just archival. It is interpretive.
+This is why SummerClaw's memory is not just archival. It is interpretive.
 
 ## Memory Algorithms
 
@@ -169,7 +169,7 @@ EMem (Elementary Discourse Unit Memory) adds structured proposition extraction a
 
 Records are deduplicated by MD5 hash ID. Embeddings are stored as Parquet files for efficient columnar access.
 
-**Optional dependencies:** `pip install nanobot-ai[emem]` for `igraph` (PPR), `sentence-transformers` (local embeddings), `torch`, `scipy`.
+**Optional dependencies:** `pip install summerclaw-ai[emem]` for `igraph` (PPR), `sentence-transformers` (local embeddings), `torch`, `scipy`.
 
 **Configuration** (via `EMemConfig`):
 - `skip_ppr`: disable PPR graph propagation (dense-only mode)
@@ -221,7 +221,7 @@ Based on the GenericAgent multi-layer memory architecture, this algorithm organi
 | **L3** | Task SOPs | `memory/sop/*.md` + `*.py` | Per-task files | Reusable workflows and utility scripts |
 | **L4** | Archives | `memory/archives/` | Auto-managed | Compressed session histories |
 
-**Dependencies:** Zero external dependencies — pure Python implementation using the standard nanobot file I/O stack.
+**Dependencies:** Zero external dependencies — pure Python implementation using the standard summerclaw file I/O stack.
 
 **Decision flow:**
 1. Consolidator classifies each conversation segment via the L0 decision tree
@@ -278,7 +278,7 @@ Based on [nemori](https://github.com/nemori-ai/nemori), this algorithm implement
 
 ### 5. `mem0v3_memory` — Token-Efficient ADD-Only Memory
 
-Based on the [mem0 v3](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm) algorithm (April 2026), completely rewritten for nanobot with zero external dependencies.
+Based on the [mem0 v3](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm) algorithm (April 2026), completely rewritten for summerclaw with zero external dependencies.
 
 **Key features:**
 - **Single-pass ADD-only extraction**: One LLM call replaces the old two-pass UPDATE+DELETE approach. Every fact becomes an independent record — old facts coexist with new ones, preserving full state change history.
@@ -611,7 +611,7 @@ These commands exist for a reason: automatic memory is powerful, but users shoul
 
 ## Versioned Memory
 
-After Dream changes long-term memory files, nanobot can record that change with `GitStore`.
+After Dream changes long-term memory files, summerclaw can record that change with `GitStore`.
 
 This gives memory a history of its own:
 
@@ -702,8 +702,8 @@ In practical terms:
 
 Legacy note:
 
-- Older source-based configs may still contain `dream.cron`. nanobot continues to honor it for backward compatibility, but new configs should use `intervalH`.
-- Older source-based configs may still contain `dream.model`. nanobot continues to honor it for backward compatibility, but new configs should use `modelOverride`.
+- Older source-based configs may still contain `dream.cron`. summerclaw continues to honor it for backward compatibility, but new configs should use `intervalH`.
+- Older source-based configs may still contain `dream.model`. summerclaw continues to honor it for backward compatibility, but new configs should use `modelOverride`.
 
 ## In Practice
 

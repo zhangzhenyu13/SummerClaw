@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobot.memory.mem0v3_memory.consolidator import Mem0V3Consolidator
-from nanobot.memory.mem0v3_memory.store import Mem0V3Store
+from summerclaw.memory.mem0v3_memory.consolidator import Mem0V3Consolidator
+from summerclaw.memory.mem0v3_memory.store import Mem0V3Store
 
 
 # ===================================================================

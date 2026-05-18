@@ -3,8 +3,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from nanobot.agent.skill_autogen import SkillAutogen
-from nanobot.memory import MemoryStore
+from summerclaw.agent.skill_autogen import SkillAutogen
+from summerclaw.memory import MemoryStore
 
 
 @pytest.fixture

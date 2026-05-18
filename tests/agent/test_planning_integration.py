@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from loguru import logger
 
-from nanobot.agent.complexity import LLMComplexityEvaluator, _is_trivially_simple
-from nanobot.config.schema import AgentDefaults
-from nanobot.providers.base import LLMResponse
+from summerclaw.agent.complexity import LLMComplexityEvaluator, _is_trivially_simple
+from summerclaw.config.schema import AgentDefaults
+from summerclaw.providers.base import LLMResponse
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 
@@ -40,8 +40,8 @@ def _make_loop(tmp_path: Path, *, execution_mode: str = "auto"):
     The complexity evaluator's LLM call is also mocked — it returns
     COMPLEX for any non-trivial message by default (conservative).
     """
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
+    from summerclaw.agent.loop import AgentLoop
+    from summerclaw.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
@@ -56,12 +56,12 @@ def _make_loop(tmp_path: Path, *, execution_mode: str = "auto"):
         usage={"prompt_tokens": 100, "completion_tokens": 1},
     ))
 
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr, \
-         patch("nanobot.memory.naive_memory.consolidator.Consolidator"), \
-         patch("nanobot.memory.naive_memory.dream.Dream"), \
-         patch("nanobot.memory.naive_memory.auto_compact.AutoCompact"):
+    with patch("summerclaw.agent.loop.ContextBuilder"), \
+         patch("summerclaw.agent.loop.SessionManager"), \
+         patch("summerclaw.agent.loop.SubagentManager") as MockSubMgr, \
+         patch("summerclaw.memory.naive_memory.consolidator.Consolidator"), \
+         patch("summerclaw.memory.naive_memory.dream.Dream"), \
+         patch("summerclaw.memory.naive_memory.auto_compact.AutoCompact"):
         MockSubMgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(
             bus=bus, provider=provider, workspace=tmp_path,

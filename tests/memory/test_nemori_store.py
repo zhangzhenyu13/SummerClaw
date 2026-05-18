@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from nanobot.memory.nemori_memory.models import Episode, Message, SemanticMemory
-from nanobot.memory.nemori_memory.store import NemoriStore, _FileBufferStore, _FileStore
+from summerclaw.memory.nemori_memory.models import Episode, Message, SemanticMemory
+from summerclaw.memory.nemori_memory.store import NemoriStore, _FileBufferStore, _FileStore
 
 
 # ============================================================================
@@ -550,8 +550,8 @@ class TestMessageDomainModel:
         assert msg.content == "Hello world"
         assert msg.metadata == {"k": "v"}
 
-    def test_from_nanobot_message(self):
+    def test_from_summerclaw_message(self):
         nb_msg = {"role": "assistant", "content": "Done", "tools_used": ["read_file"]}
-        msg = Message.from_nanobot_message(nb_msg)
+        msg = Message.from_summerclaw_message(nb_msg)
         assert msg.role == "assistant"
         assert msg.metadata["tools_used"] == ["read_file"]

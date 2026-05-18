@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.memory.mastra_om_memory.groups import (
+from summerclaw.memory.mastra_om_memory.groups import (
     parse_observation_groups,
     strip_observation_groups,
     reconcile_observation_groups_from_reflection,
@@ -21,24 +21,24 @@ from nanobot.memory.mastra_om_memory.groups import (
     wrap_in_observation_group,
     build_message_range,
 )
-from nanobot.memory.mastra_om_memory.observer import (
+from summerclaw.memory.mastra_om_memory.observer import (
     build_observer_system_prompt,
     build_observer_prompt,
     parse_observer_output,
     OBSERVATION_CONTEXT_INSTRUCTIONS,
 )
-from nanobot.memory.mastra_om_memory.reflector import (
+from summerclaw.memory.mastra_om_memory.reflector import (
     build_reflector_system_prompt,
     parse_reflector_output,
 )
-from nanobot.memory.mastra_om_memory.buffering import (
+from summerclaw.memory.mastra_om_memory.buffering import (
     BufferingCoordinator,
     BufferingStore,
     BufferedChunk,
     async_buffer_observe,
     activate_buffered_observations,
 )
-from nanobot.memory.mastra_om_memory.consolidator import MastraOMConsolidator
+from summerclaw.memory.mastra_om_memory.consolidator import MastraOMConsolidator
 
 
 # ── Mock helpers ───────────────────────────────────────────────────────────
@@ -398,7 +398,7 @@ class TestFullPipelineIntegration:
 
     def test_observer_prompt_with_enhanced_instructions(self):
         """The task prompt builder works with enhanced system prompts."""
-        from nanobot.memory.mastra_om_memory.observer import build_observer_task_prompt
+        from summerclaw.memory.mastra_om_memory.observer import build_observer_task_prompt
 
         task_prompt = build_observer_task_prompt(
             existing_observations="* 🔴 Previous observation",

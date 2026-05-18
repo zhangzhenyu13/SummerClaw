@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.memory.nemori_memory.models import Message
-from nanobot.memory.nemori_memory.segmenter import BatchSegmenter
+from summerclaw.memory.nemori_memory.models import Message
+from summerclaw.memory.nemori_memory.segmenter import BatchSegmenter
 
 
 @pytest.fixture

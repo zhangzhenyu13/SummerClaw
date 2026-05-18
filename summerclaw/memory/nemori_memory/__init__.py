@@ -1,0 +1,124 @@
+"""Nemori memory algorithm — self-organising long-term memory for summerclaw.
+
+Based on nemori (https://github.com/nemori-ai/nemori).
+
+Implements two coupled control loops:
+  1. Two-Step Alignment:
+     - Boundary Alignment: LLM-powered topic segmentation
+     - Representation Alignment: episode narrative generation
+  2. Predict-Calibrate Learning:
+     - Predict: hypothesise from existing semantic knowledge
+     - Calibrate: extract high-value facts from discrepancies
+
+Usage::
+
+    from summerclaw.memory import MemoryRegistry
+    from summerclaw.memory.nemori_memory import NemoriMemoryAlgorithm
+
+    registry = MemoryRegistry()
+    registry.register(NemoriMemoryAlgorithm())
+    algo = registry.get("nemori_memory")
+    components = algo.build(...)
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from summerclaw.memory.base import MemoryAlgorithm, MemoryComponents
+from summerclaw.memory.nemori_memory.consolidator import NemoriConsolidator
+from summerclaw.memory.nemori_memory.dream import NemoriDream
+from summerclaw.memory.nemori_memory.episode_generator import EpisodeGenerator
+from summerclaw.memory.nemori_memory.merger import EpisodeMerger
+from summerclaw.memory.nemori_memory.search import UnifiedSearch
+from summerclaw.memory.nemori_memory.segmenter import BatchSegmenter
+from summerclaw.memory.nemori_memory.semantic_generator import SemanticGenerator
+from summerclaw.memory.nemori_memory.store import NemoriStore
+
+if TYPE_CHECKING:
+    from summerclaw.providers.base import LLMProvider
+    from summerclaw.session.manager import SessionManager
+
+
+class NemoriMemoryAlgorithm(MemoryAlgorithm):
+    """Nemori memory algorithm — self-organising long-term memory.
+
+    Defaults to file-based storage (zero extra dependencies).
+    Set ``backend="postgres"`` in config to use PostgreSQL + Qdrant.
+
+    Key features:
+    - LLM-powered batch segmentation into topic-coherent episodes
+    - Structured episode generation with temporal anchoring
+    - Predict-Calibrate semantic knowledge extraction
+    - Episode merging to avoid duplication
+    - Unified search across episodes + semantic memories
+    """
+
+    name = "nemori_memory"
+
+    def build(
+        self,
+        workspace: Path,
+        provider: "LLMProvider",
+        model: str,
+        sessions: "SessionManager",
+        context_window_tokens: int,
+        build_messages,
+        get_tool_definitions,
+        max_completion_tokens: int,
+        session_ttl_minutes: int,
+        max_batch_size: int,
+        max_iterations: int,
+        max_tool_result_chars: int,
+        annotate_line_ages: bool,
+        embedding_config: Any = None,
+    ) -> MemoryComponents:
+        # Storage layer
+        store = NemoriStore(workspace, backend="file", algo_name=self.name)
+
+        # Pipeline components
+        segmenter = BatchSegmenter(provider, model)
+        episode_gen = EpisodeGenerator(provider, model)
+        semantic_gen = SemanticGenerator(
+            provider, model, enable_prediction_correction=True
+        )
+        merger = EpisodeMerger(provider, model, store)
+
+        # Orchestrator (consolidator)
+        consolidator = NemoriConsolidator(
+            store=store,
+            segmenter=segmenter,
+            episode_generator=episode_gen,
+            semantic_generator=semantic_gen,
+            merger=merger,
+            buffer_size_min=2,
+            batch_threshold=10,
+            episode_min_messages=2,
+            enable_semantic=True,
+            enable_merging=True,
+        )
+
+        # Search
+        search = UnifiedSearch(store)
+
+        # Dream (cron-scheduled deep processing + skill generation)
+        dream = NemoriDream(
+            store=store,
+            search=search,
+            provider=provider,
+            model=model,
+            workspace=workspace,
+            max_batch_size=max_batch_size,
+            max_iterations=max_iterations,
+            max_tool_result_chars=max_tool_result_chars,
+            annotate_line_ages=annotate_line_ages,
+            algo_name=self.name,
+        )
+
+        return MemoryComponents(
+            store=store,
+            consolidator=consolidator,
+            dream=dream,
+            auto_compact=None,  # nemori handles compaction via buffer cleanup
+        )

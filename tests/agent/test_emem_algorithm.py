@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobot.memory.base import MemoryComponents
-from nanobot.memory.emem_memory import EMemMemoryAlgorithm
-from nanobot.memory.emem_memory.auto_compact import EMemAutoCompact
-from nanobot.memory.emem_memory.consolidator import EMemConsolidator
-from nanobot.memory.emem_memory.datatypes import EMemConfig
-from nanobot.memory.emem_memory.dream import EMemDream
-from nanobot.memory.emem_memory.store import EMemStore
+from summerclaw.memory.base import MemoryComponents
+from summerclaw.memory.emem_memory import EMemMemoryAlgorithm
+from summerclaw.memory.emem_memory.auto_compact import EMemAutoCompact
+from summerclaw.memory.emem_memory.consolidator import EMemConsolidator
+from summerclaw.memory.emem_memory.datatypes import EMemConfig
+from summerclaw.memory.emem_memory.dream import EMemDream
+from summerclaw.memory.emem_memory.store import EMemStore
 
 
 # ===================================================================
@@ -71,7 +71,7 @@ class TestEMemMemoryAlgorithmBuild:
 
         # Patch EMemEmbedder to avoid OpenAI API key requirement during test
         with patch(
-            "nanobot.memory.emem_memory.embedding.EMemEmbedder",
+            "summerclaw.memory.emem_memory.embedding.EMemEmbedder",
             autospec=True,
         ) as mock_embedder_cls:
             mock_embedder = MagicMock()
@@ -102,7 +102,7 @@ class TestEMemMemoryAlgorithmBuild:
         algo = EMemMemoryAlgorithm()
 
         with patch(
-            "nanobot.memory.emem_memory.embedding.EMemEmbedder",
+            "summerclaw.memory.emem_memory.embedding.EMemEmbedder",
             autospec=True,
         ) as mock_embedder_cls:
             mock_embedder = MagicMock()
@@ -137,7 +137,7 @@ class TestEMemMemoryAlgorithmBuild:
         algo = EMemMemoryAlgorithm()
 
         with patch(
-            "nanobot.memory.emem_memory.embedding.EMemEmbedder",
+            "summerclaw.memory.emem_memory.embedding.EMemEmbedder",
             autospec=True,
         ) as mock_embedder_cls:
             mock_embedder = MagicMock()
@@ -169,7 +169,7 @@ class TestEMemMemoryAlgorithmBuild:
         algo = EMemMemoryAlgorithm()
 
         with patch(
-            "nanobot.memory.emem_memory.embedding.EMemEmbedder",
+            "summerclaw.memory.emem_memory.embedding.EMemEmbedder",
             autospec=True,
         ) as mock_embedder_cls:
             mock_embedder = MagicMock()
@@ -212,7 +212,7 @@ class TestEMemMemoryAlgorithmBuild:
         mock_provider.api_base = None
 
         with patch(
-            "nanobot.memory.emem_memory.embedding.EMemEmbedder",
+            "summerclaw.memory.emem_memory.embedding.EMemEmbedder",
             autospec=True,
         ) as mock_embedder_cls:
             mock_embedder = MagicMock()
@@ -250,7 +250,7 @@ class TestEMemMemoryAlgorithmBuild:
         algo = EMemMemoryAlgorithm(config=config)
 
         with patch(
-            "nanobot.memory.emem_memory.embedding.EMemEmbedder",
+            "summerclaw.memory.emem_memory.embedding.EMemEmbedder",
             autospec=True,
         ) as mock_embedder_cls:
             mock_embedder = MagicMock()
@@ -284,7 +284,7 @@ class TestEMemMemoryAlgorithmRegistry:
     """Test registry integration."""
 
     def test_algorithm_registers_in_registry(self) -> None:
-        from nanobot.memory.registry import MemoryRegistry
+        from summerclaw.memory.registry import MemoryRegistry
 
         registry = MemoryRegistry()
         registry.register(EMemMemoryAlgorithm())
@@ -293,7 +293,7 @@ class TestEMemMemoryAlgorithmRegistry:
         assert algo.name == "emem_memory"
 
     def test_algorithm_overrides_registry(self) -> None:
-        from nanobot.memory.registry import MemoryRegistry
+        from summerclaw.memory.registry import MemoryRegistry
 
         registry = MemoryRegistry()
         algo1 = EMemMemoryAlgorithm(EMemConfig(damping=0.5))

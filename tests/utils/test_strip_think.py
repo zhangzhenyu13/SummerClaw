@@ -1,6 +1,6 @@
 import pytest
 
-from nanobot.utils.helpers import strip_think
+from summerclaw.utils.helpers import strip_think
 
 
 class TestStripThinkTag:

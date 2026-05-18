@@ -2,13 +2,13 @@
 
 > **Note:** This interface is currently an experiment in the latest source code version and is planned to officially ship in `v0.1.5`.
 
-Use nanobot programmatically — load config, run the agent, get results.
+Use summerclaw programmatically — load config, run the agent, get results.
 
 ## Quick Start
 
 ```python
 import asyncio
-from nanobot import Nanobot
+from summerclaw import Nanobot
 
 async def main():
     bot = Nanobot.from_config()
@@ -26,7 +26,7 @@ Create a `Nanobot` from a config file.
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `config_path` | `str \| Path \| None` | `None` | Path to `config.json`. Defaults to `~/.nanobot/config.json`. |
+| `config_path` | `str \| Path \| None` | `None` | Path to `config.json`. Defaults to `~/.summerclaw/config.json`. |
 | `workspace` | `str \| Path \| None` | `None` | Override workspace directory from config. |
 
 Raises `FileNotFoundError` if an explicit path doesn't exist.
@@ -73,7 +73,7 @@ Subclass `AgentHook` and override any method:
 ### Example: Audit Hook
 
 ```python
-from nanobot.agent import AgentHook, AgentHookContext
+from summerclaw.agent import AgentHook, AgentHookContext
 
 class AuditHook(AgentHook):
     def __init__(self):
@@ -113,8 +113,8 @@ class Censor(AgentHook):
 
 ```python
 import asyncio
-from nanobot import Nanobot
-from nanobot.agent import AgentHook, AgentHookContext
+from summerclaw import Nanobot
+from summerclaw.agent import AgentHook, AgentHookContext
 
 class TimingHook(AgentHook):
     async def before_iteration(self, ctx: AgentHookContext) -> None:

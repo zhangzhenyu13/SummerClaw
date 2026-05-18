@@ -3,8 +3,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nanobot.memory.mastra_om_memory.consolidator import MastraOMConsolidator
-from nanobot.memory.mastra_om_memory.store import MastraOMStore
+from summerclaw.memory.mastra_om_memory.consolidator import MastraOMConsolidator
+from summerclaw.memory.mastra_om_memory.store import MastraOMStore
 
 
 @pytest.fixture

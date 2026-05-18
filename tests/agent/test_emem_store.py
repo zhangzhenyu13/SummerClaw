@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from nanobot.memory.emem_memory.store import ContentStore, EMemStore
+from summerclaw.memory.emem_memory.store import ContentStore, EMemStore
 
 
 # ===================================================================
@@ -602,7 +602,7 @@ class TestContentStoreCustomTypes:
 
     def test_edu_store_insert_and_retrieve(self, store: EMemStore) -> None:
         """Insert EDURecords into the EDU content store."""
-        from nanobot.memory.emem_memory.datatypes import EDURecord
+        from summerclaw.memory.emem_memory.datatypes import EDURecord
 
         edu = EDURecord(
             edu_id="edu-test-001",
@@ -618,7 +618,7 @@ class TestContentStoreCustomTypes:
 
     def test_argument_store_insert_and_retrieve(self, store: EMemStore) -> None:
         """Insert ArgumentRecords into the argument content store."""
-        from nanobot.memory.emem_memory.datatypes import ArgumentRecord
+        from summerclaw.memory.emem_memory.datatypes import ArgumentRecord
 
         arg = ArgumentRecord(
             arg_id="arg-test-001",
@@ -632,7 +632,7 @@ class TestContentStoreCustomTypes:
 
     def test_session_store_insert_and_retrieve(self, store: EMemStore) -> None:
         """Insert SessionRecords into the session content store."""
-        from nanobot.memory.emem_memory.datatypes import SessionRecord
+        from summerclaw.memory.emem_memory.datatypes import SessionRecord
 
         session = SessionRecord(
             session_id="session-test-001",
@@ -654,7 +654,7 @@ class TestContentStorePersistence:
     def test_persistence_roundtrip(
         self, tmp_path: Path, mock_embedder: MagicMock,
     ) -> None:
-        from nanobot.memory.emem_memory.datatypes import EDURecord
+        from summerclaw.memory.emem_memory.datatypes import EDURecord
 
         db_dir = tmp_path / "persist_db"
         # Create, insert, and "reopen"
@@ -687,7 +687,7 @@ class TestContentStorePersistence:
 
     def test_get_all_id_to_rows(self, store: EMemStore) -> None:
         """Test get_all_id_to_rows on the edu store."""
-        from nanobot.memory.emem_memory.datatypes import EDURecord
+        from summerclaw.memory.emem_memory.datatypes import EDURecord
 
         edu = EDURecord(edu_id="edu-rows", text="Test rows.")
         store.edu_store.insert_content([edu])

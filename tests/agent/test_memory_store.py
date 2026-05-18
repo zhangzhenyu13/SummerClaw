@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.memory import MemoryStore
-from nanobot.memory.mastra_om_memory.store import MastraOMStore
-from nanobot.memory.mem0v3_memory.store import Mem0V3Store
-from nanobot.memory.nemori_memory.store import NemoriStore
-from nanobot.memory.supermemory_memory.store import SupermemoryStore
-from nanobot.memory.layerga_memory.store import LayergaStore
-from nanobot.memory.hindsight_memory.store import HindsightStore
+from summerclaw.memory import MemoryStore
+from summerclaw.memory.mastra_om_memory.store import MastraOMStore
+from summerclaw.memory.mem0v3_memory.store import Mem0V3Store
+from summerclaw.memory.nemori_memory.store import NemoriStore
+from summerclaw.memory.supermemory_memory.store import SupermemoryStore
+from summerclaw.memory.layerga_memory.store import LayergaStore
+from summerclaw.memory.hindsight_memory.store import HindsightStore
 
 
 @pytest.fixture

@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
-from nanobot.memory.mastra_om_memory.auto_compact import MastraOMAutoCompact
+from summerclaw.memory.mastra_om_memory.auto_compact import MastraOMAutoCompact
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ class TestFormatSummary:
 class TestSplitUnconsolidated:
 
     def test_split_returns_two_parts(self, auto_compact):
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
 
         session = Session(
             key="test:key",
@@ -108,7 +108,7 @@ class TestSplitUnconsolidated:
         assert len(archiveable) + len(kept) == 20
 
     def test_split_all_consolidated(self, auto_compact):
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
 
         session = Session(
             key="test:key",
@@ -123,7 +123,7 @@ class TestSplitUnconsolidated:
         assert kept == []
 
     def test_split_small_tail_all_kept(self, auto_compact):
-        from nanobot.session.manager import Session
+        from summerclaw.session.manager import Session
 
         session = Session(
             key="test:key",

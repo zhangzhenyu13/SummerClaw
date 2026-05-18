@@ -34,10 +34,10 @@ Add to `config.json` under `channels.websocket`:
 }
 ```
 
-### 2. Start nanobot
+### 2. Start summerclaw
 
 ```bash
-nanobot gateway
+summerclaw gateway
 ```
 
 You should see:
@@ -59,7 +59,7 @@ async def main():
     async with websockets.connect("ws://127.0.0.1:8765/?client_id=alice") as ws:
         ready = json.loads(await ws.recv())
         print(ready)  # {"event": "ready", "chat_id": "...", "client_id": "alice"}
-        await ws.send(json.dumps({"content": "Hello nanobot!"}))
+        await ws.send(json.dumps({"content": "Hello summerclaw!"}))
         reply = json.loads(await ws.recv())
         print(reply["text"])
 
@@ -130,13 +130,13 @@ All frames are JSON text. Each message has an `event` field.
 Send plain text:
 
 ```json
-"Hello nanobot!"
+"Hello summerclaw!"
 ```
 
 Or send a JSON object with a recognized text field:
 
 ```json
-{"content": "Hello nanobot!"}
+{"content": "Hello summerclaw!"}
 ```
 
 Recognized fields: `content`, `text`, `message` (checked in that order). Invalid JSON is treated as plain text.
@@ -256,7 +256,7 @@ websocat "ws://127.0.0.1:8765/ws?client_id=alice&token=nbwt_aBcDeFg..."
 Outbound `message` events may include a `media` field containing local filesystem paths. Remote clients cannot access these files directly — they need either:
 
 - A shared filesystem mount, or
-- An HTTP file server serving the nanobot media directory
+- An HTTP file server serving the summerclaw media directory
 
 ## Common Patterns
 

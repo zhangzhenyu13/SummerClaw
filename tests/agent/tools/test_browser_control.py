@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.agent.tools.browser_control import (
+from summerclaw.agent.tools.browser_control import (
     BrowserExecuteJSTool,
     BrowserManager,
     BrowserNavigateTool,
@@ -123,24 +123,24 @@ class TestBrowserManagerUrlValidation:
         """Public URL should pass SSRF validation."""
         mgr = _make_manager()
         # We can't rely on DNS in tests, so test the call pattern
-        with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
             mgr._validate_url("https://example.com")
 
     def test_private_ip_url_fails(self):
         mgr = _make_manager()
-        with patch("nanobot.security.network.validate_url_target", return_value=(False, "private")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(False, "private")):
             with pytest.raises(ValueError, match="URL validation failed"):
                 mgr._validate_url("http://127.0.0.1")
 
     def test_file_scheme_fails(self):
         mgr = _make_manager()
-        with patch("nanobot.security.network.validate_url_target", return_value=(False, "scheme")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(False, "scheme")):
             with pytest.raises(ValueError, match="URL validation failed"):
                 mgr._validate_url("file:///etc/passwd")
 
     def test_invalid_url_fails(self):
         mgr = _make_manager()
-        with patch("nanobot.security.network.validate_url_target", return_value=(False, "bad")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(False, "bad")):
             with pytest.raises(ValueError, match="URL validation failed"):
                 mgr._validate_url("not-a-url")
 
@@ -187,7 +187,7 @@ class TestBrowserManagerEnsureBrowser:
         sys.modules["playwright.async_api"].async_playwright = mock_async_pw
 
         try:
-            with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+            with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
                 await mgr.ensure_browser()
 
             assert "default" in mgr._pages
@@ -230,7 +230,7 @@ class TestBrowserManagerNavigate:
     @pytest.mark.asyncio
     async def test_navigate_returns_url_and_title(self):
         mgr, browser, ctx, page = _setup_mocked_manager()
-        with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
             result = await mgr.navigate("https://example.com")
         
         assert result["url"] == "https://example.com"
@@ -243,7 +243,7 @@ class TestBrowserManagerNavigate:
     async def test_navigate_falls_back_on_load_failure(self):
         mgr, browser, ctx, page = _setup_mocked_manager()
         page.goto = AsyncMock(side_effect=[Exception("timeout"), None])
-        with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
             await mgr.navigate("https://slow.com")
         assert page.goto.await_count == 2
 
@@ -252,7 +252,7 @@ class TestBrowserManagerNavigate:
         mgr, browser, ctx, page = _setup_mocked_manager()
         old = mgr._last_used
         with (
-            patch("nanobot.security.network.validate_url_target", return_value=(True, "")),
+            patch("summerclaw.security.network.validate_url_target", return_value=(True, "")),
             patch("time.monotonic", return_value=5000.0),
         ):
             await mgr.navigate("https://example.com")
@@ -262,7 +262,7 @@ class TestBrowserManagerNavigate:
     async def test_navigate_handles_title_error(self):
         mgr, browser, ctx, page = _setup_mocked_manager()
         page.title = AsyncMock(side_effect=Exception("no title"))
-        with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
             result = await mgr.navigate("https://example.com")
         assert result["title"] == ""
 
@@ -325,7 +325,7 @@ class TestBrowserManagerTabs:
         mgr, browser, ctx, page = _setup_mocked_manager()
         new_page = _make_mock_page()
         ctx.new_page = AsyncMock(return_value=new_page)
-        with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
             result = await mgr.new_tab("https://new-page.com")
         assert result["status"] == "created"
         assert "tab_2" in result["tab_id"]
@@ -608,7 +608,7 @@ class TestBrowserNavigateToolGo:
     async def test_go_action_returns_result(self):
         mgr, browser, ctx, page = _setup_mocked_manager()
         tool = BrowserNavigateTool(manager=mgr)
-        with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
             result = await tool.execute(action="go", url="https://example.com")
         assert "Navigated to" in result
         assert "example.com" in result
@@ -625,7 +625,7 @@ class TestBrowserNavigateToolGo:
     async def test_go_exception_returns_error(self):
         mgr, browser, ctx, page = _setup_mocked_manager()
         tool = BrowserNavigateTool(manager=mgr)
-        with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
             mgr.navigate = AsyncMock(side_effect=RuntimeError("network down"))
             result = await tool.execute(action="go", url="https://example.com")
         assert "Error" in result
@@ -703,7 +703,7 @@ class TestBrowserNavigateToolNewTab:
         mgr, browser, ctx, page = _setup_mocked_manager()
         ctx.new_page = AsyncMock(return_value=_make_mock_page())
         tool = BrowserNavigateTool(manager=mgr)
-        with patch("nanobot.security.network.validate_url_target", return_value=(True, "")):
+        with patch("summerclaw.security.network.validate_url_target", return_value=(True, "")):
             result = await tool.execute(action="new_tab", url="https://example.com")
         assert "Created tab" in result
 

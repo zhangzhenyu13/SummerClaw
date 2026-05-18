@@ -4,10 +4,10 @@ import pytest
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nanobot.memory import Dream, MemoryStore
-from nanobot.agent.runner import AgentRunResult
-from nanobot.agent.skills import BUILTIN_SKILLS_DIR
-from nanobot.utils.gitstore import LineAge
+from summerclaw.memory import Dream, MemoryStore
+from summerclaw.agent.runner import AgentRunResult
+from summerclaw.agent.skills import BUILTIN_SKILLS_DIR
+from summerclaw.utils.gitstore import LineAge
 
 
 @pytest.fixture

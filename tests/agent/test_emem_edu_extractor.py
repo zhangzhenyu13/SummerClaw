@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.memory.emem_memory.datatypes import EDURecord
-from nanobot.memory.emem_memory.edu_extractor import EDUExtractor
+from summerclaw.memory.emem_memory.datatypes import EDURecord
+from summerclaw.memory.emem_memory.edu_extractor import EDUExtractor
 
 
 # ===================================================================

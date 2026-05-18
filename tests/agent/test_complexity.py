@@ -1,4 +1,4 @@
-"""Tests for task complexity evaluator (nanobot.agent.complexity).
+"""Tests for task complexity evaluator (summerclaw.agent.complexity).
 
 Covers:
   Phase 1 — regex pre-filter (_is_trivially_simple)
@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.complexity import (
+from summerclaw.agent.complexity import (
     LLMComplexityEvaluator,
     _is_trivially_simple,
     is_complex_task,
 )
-from nanobot.config.schema import AgentDefaults
-from nanobot.providers.base import LLMResponse
+from summerclaw.config.schema import AgentDefaults
+from summerclaw.providers.base import LLMResponse
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 
@@ -266,8 +266,8 @@ class TestLLMEvaluatorPhase2Classification:
         not truly "empty" to the runner.  We test this via runner mock."""
         evaluator, provider = _make_evaluator()
 
-        import nanobot.agent.runner as runner_mod
-        from nanobot.agent.runner import AgentRunResult
+        import summerclaw.agent.runner as runner_mod
+        from summerclaw.agent.runner import AgentRunResult
 
         async def mock_run(self, spec):
             return AgentRunResult(
@@ -312,8 +312,8 @@ class TestLLMEvaluatorErrorHandling:
             usage={},
         ))
         # Set stop_reason by patching the runner
-        import nanobot.agent.runner as runner_mod
-        from nanobot.agent.runner import AgentRunResult
+        import summerclaw.agent.runner as runner_mod
+        from summerclaw.agent.runner import AgentRunResult
 
         async def mock_run(self, spec):
             return AgentRunResult(
@@ -332,8 +332,8 @@ class TestLLMEvaluatorErrorHandling:
         """When runner returns final_content=None due to error, default to COMPLEX."""
         evaluator, provider = _make_evaluator()
 
-        import nanobot.agent.runner as runner_mod
-        from nanobot.agent.runner import AgentRunResult
+        import summerclaw.agent.runner as runner_mod
+        from summerclaw.agent.runner import AgentRunResult
 
         async def mock_run(self, spec):
             return AgentRunResult(

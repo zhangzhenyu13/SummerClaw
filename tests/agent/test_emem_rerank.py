@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.memory.emem_memory.rerank import ArgumentReranker, EDUReranker
+from summerclaw.memory.emem_memory.rerank import ArgumentReranker, EDUReranker
 
 
 # ===================================================================

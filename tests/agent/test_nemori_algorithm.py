@@ -9,11 +9,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nanobot.memory import MemoryComponents
-from nanobot.memory.nemori_memory import NemoriMemoryAlgorithm
-from nanobot.memory.nemori_memory.consolidator import NemoriConsolidator
-from nanobot.memory.nemori_memory.dream import NemoriDream
-from nanobot.memory.nemori_memory.store import NemoriStore
+from summerclaw.memory import MemoryComponents
+from summerclaw.memory.nemori_memory import NemoriMemoryAlgorithm
+from summerclaw.memory.nemori_memory.consolidator import NemoriConsolidator
+from summerclaw.memory.nemori_memory.dream import NemoriDream
+from summerclaw.memory.nemori_memory.store import NemoriStore
 
 
 @pytest.fixture
@@ -119,7 +119,7 @@ class TestNemoriMemoryAlgorithm:
 
     def test_register_in_memory_registry(self, algo):
         """NemoriMemoryAlgorithm should be registrable in MemoryRegistry."""
-        from nanobot.memory.registry import MemoryRegistry
+        from summerclaw.memory.registry import MemoryRegistry
         registry = MemoryRegistry()
         registry.register(algo)
         assert "nemori_memory" in registry.list()

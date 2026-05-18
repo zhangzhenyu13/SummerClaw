@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-from nanobot.api.server import (
+from summerclaw.api.server import (
     _sse_chunk,
     _SSE_DONE,
     create_app,

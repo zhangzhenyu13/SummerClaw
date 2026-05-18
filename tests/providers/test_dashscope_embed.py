@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobot.providers.openai_compat_provider import OpenAICompatProvider
+from summerclaw.providers.openai_compat_provider import OpenAICompatProvider
 
 
 # ===================================================================
@@ -72,7 +72,7 @@ class TestEmbedRouting:
 
     def test_non_dashscope_spec_uses_openai_compat(self) -> None:
         """When spec is not dashscope, uses the standard /embeddings endpoint."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         openai_spec = ProviderSpec(
             name="openai",
@@ -103,7 +103,7 @@ class TestEmbedRouting:
 
     def test_dashscope_multimodal_routes_to_native_api(self) -> None:
         """When spec is dashscope and model is multimodal, uses native API."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -134,7 +134,7 @@ class TestEmbedRouting:
 
     def test_dashscope_text_embedding_uses_openai_compat(self) -> None:
         """DashScope text-embedding-v* models use the OpenAI-compat endpoint."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -163,7 +163,7 @@ class TestEmbedRouting:
 
     def test_dashscope_qwen_chat_model_uses_openai_compat(self) -> None:
         """DashScope with a non-embedding chat model (qwen-plus) uses OpenAI-compat."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -198,7 +198,7 @@ class TestDashScopeNativeEmbed:
 
     def test_successful_batch_call(self) -> None:
         """Single batch of texts returns correct embeddings."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -231,7 +231,7 @@ class TestDashScopeNativeEmbed:
 
     def test_large_batch_splits_into_sub_batches(self) -> None:
         """Texts exceeding batch_size=10 are split."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -275,7 +275,7 @@ class TestDashScopeNativeEmbed:
 
     def test_batch_failure_falls_back_to_single(self) -> None:
         """When a batch fails, individual texts are retried one-by-one."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -323,7 +323,7 @@ class TestDashScopeNativeEmbed:
 
     def test_correct_url_and_headers(self) -> None:
         """Verify the native API endpoint URL and auth headers."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -363,7 +363,7 @@ class TestDashScopeNativeEmbed:
 
     def test_payload_format(self) -> None:
         """Verify the JSON payload format matches DashScope native API."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -403,7 +403,7 @@ class TestDashScopeNativeEmbed:
 
     def test_empty_response_embeddings(self) -> None:
         """When API returns no embeddings, result is empty."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -445,7 +445,7 @@ class TestEmbedIntegration:
     ])
     def test_all_multimodal_models_route_to_native(self, model: str) -> None:
         """Every known DashScope multimodal model goes to native API."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",
@@ -475,7 +475,7 @@ class TestEmbedIntegration:
     ])
     def test_dashscope_text_embed_models_use_openai_compat(self, model: str) -> None:
         """DashScope text-embedding models stay on OpenAI-compat."""
-        from nanobot.providers.registry import ProviderSpec
+        from summerclaw.providers.registry import ProviderSpec
 
         dashscope_spec = ProviderSpec(
             name="dashscope",

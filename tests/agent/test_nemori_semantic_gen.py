@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.memory.nemori_memory.models import Episode, SemanticMemory
-from nanobot.memory.nemori_memory.semantic_generator import SemanticGenerator, _extract_text
+from summerclaw.memory.nemori_memory.models import Episode, SemanticMemory
+from summerclaw.memory.nemori_memory.semantic_generator import SemanticGenerator, _extract_text
 
 
 @pytest.fixture

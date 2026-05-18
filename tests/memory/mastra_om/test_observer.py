@@ -2,7 +2,7 @@
 
 import pytest
 
-from nanobot.memory.mastra_om_memory.observer import (
+from summerclaw.memory.mastra_om_memory.observer import (
     build_observer_system_prompt,
     build_observer_prompt,
     build_observer_task_prompt,

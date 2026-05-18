@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
-from nanobot.memory.nemori_memory.consolidator import NemoriConsolidator
-from nanobot.memory.nemori_memory.models import Episode, Message
-from nanobot.memory.nemori_memory.store import NemoriStore
+from summerclaw.memory.nemori_memory.consolidator import NemoriConsolidator
+from summerclaw.memory.nemori_memory.models import Episode, Message
+from summerclaw.memory.nemori_memory.store import NemoriStore
 
 
 @pytest.fixture
@@ -278,7 +278,7 @@ class TestNemoriConsolidatorLock:
 
     def test_lock_lru_eviction(self, store, mock_segmenter, mock_episode_gen, mock_semantic_gen):
         """When lock count exceeds _MAX_LOCKS, oldest is evicted."""
-        from nanobot.memory.nemori_memory.consolidator import _MAX_LOCKS
+        from summerclaw.memory.nemori_memory.consolidator import _MAX_LOCKS
 
         c = NemoriConsolidator(
             store=store, segmenter=mock_segmenter,

@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
-from nanobot.agent.tools import file_state
+from summerclaw.agent.tools.filesystem import ReadFileTool, WriteFileTool
+from summerclaw.agent.tools import file_state
 
 
 @pytest.fixture(autouse=True)

@@ -1,6 +1,6 @@
-# Tools in UnionClaw
+# Tools in SummerClaw
 
-UnionClaw ships with a rich set of built-in tools that the agent can invoke via function calling. Tools are managed by a unified `ToolRegistry` — each tool implements the `Tool` abstract base class, providing JSON Schema parameters, automatic type casting, and validation.
+SummerClaw ships with a rich set of built-in tools that the agent can invoke via function calling. Tools are managed by a unified `ToolRegistry` — each tool implements the `Tool` abstract base class, providing JSON Schema parameters, automatic type casting, and validation.
 
 ## Architecture
 
@@ -157,7 +157,7 @@ These tools are gated by configuration keys. They are only registered when the c
 
 ## MCP Tools (Dynamic)
 
-UnionClaw supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), allowing dynamic tool discovery from external servers. MCP tools are automatically wrapped and registered with the `mcp_<server>_` prefix.
+SummerClaw supports the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/), allowing dynamic tool discovery from external servers. MCP tools are automatically wrapped and registered with the `mcp_<server>_` prefix.
 
 | Wrapper Type | Naming Convention | Description |
 |-------------|-------------------|-------------|

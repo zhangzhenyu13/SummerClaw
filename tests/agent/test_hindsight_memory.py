@@ -15,14 +15,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.agent.runner import AgentRunResult
-from nanobot.memory import MemoryRegistry, MemoryStore
-from nanobot.memory.hindsight_memory import HindsightMemoryAlgorithm
-from nanobot.memory.hindsight_memory.auto_compact import HindsightAutoCompact
-from nanobot.memory.hindsight_memory.consolidator import HindsightConsolidator
-from nanobot.memory.hindsight_memory.dream import HindsightDream
-from nanobot.memory.hindsight_memory.store import HindsightStore
-from nanobot.utils.gitstore import LineAge
+from summerclaw.agent.runner import AgentRunResult
+from summerclaw.memory import MemoryRegistry, MemoryStore
+from summerclaw.memory.hindsight_memory import HindsightMemoryAlgorithm
+from summerclaw.memory.hindsight_memory.auto_compact import HindsightAutoCompact
+from summerclaw.memory.hindsight_memory.consolidator import HindsightConsolidator
+from summerclaw.memory.hindsight_memory.dream import HindsightDream
+from summerclaw.memory.hindsight_memory.store import HindsightStore
+from summerclaw.utils.gitstore import LineAge
 
 
 # ============================================================================
@@ -134,7 +134,7 @@ class TestHindsightStoreBasicIO:
         assert "important fact" in ctx
 
     def test_isinstance_of_naive_store(self, store):
-        from nanobot.memory.naive_memory.store import MemoryStore as NaiveStore
+        from summerclaw.memory.naive_memory.store import MemoryStore as NaiveStore
         assert isinstance(store, NaiveStore)
 
 
@@ -256,7 +256,7 @@ class TestEmbeddingStore:
     """Test the numpy binary EmbeddingStore decoupled from content JSON."""
 
     def test_add_and_get_embedding(self, tmp_workspace):
-        from nanobot.memory.embedding_store import EmbeddingStore
+        from summerclaw.memory.embedding_store import EmbeddingStore
         memory_dir = tmp_workspace / "memory"
         memory_dir.mkdir()
         es = EmbeddingStore(memory_dir)
@@ -267,14 +267,14 @@ class TestEmbeddingStore:
         assert abs(emb[0] - 0.1) < 1e-6
 
     def test_get_nonexistent_returns_none(self, tmp_workspace):
-        from nanobot.memory.embedding_store import EmbeddingStore
+        from summerclaw.memory.embedding_store import EmbeddingStore
         memory_dir = tmp_workspace / "memory"
         memory_dir.mkdir()
         es = EmbeddingStore(memory_dir)
         assert es.get("nonexistent") is None
 
     def test_remove_embedding(self, tmp_workspace):
-        from nanobot.memory.embedding_store import EmbeddingStore
+        from summerclaw.memory.embedding_store import EmbeddingStore
         memory_dir = tmp_workspace / "memory"
         memory_dir.mkdir()
         es = EmbeddingStore(memory_dir)
@@ -284,7 +284,7 @@ class TestEmbeddingStore:
         assert es.get("id1") is None
 
     def test_get_all_embeddings(self, tmp_workspace):
-        from nanobot.memory.embedding_store import EmbeddingStore
+        from summerclaw.memory.embedding_store import EmbeddingStore
         memory_dir = tmp_workspace / "memory"
         memory_dir.mkdir()
         es = EmbeddingStore(memory_dir)
@@ -299,7 +299,7 @@ class TestEmbeddingStore:
         assert "c" in ids
 
     def test_persistence_across_instances(self, tmp_workspace):
-        from nanobot.memory.embedding_store import EmbeddingStore
+        from summerclaw.memory.embedding_store import EmbeddingStore
         memory_dir = tmp_workspace / "memory"
         memory_dir.mkdir()
         es1 = EmbeddingStore(memory_dir)
@@ -311,7 +311,7 @@ class TestEmbeddingStore:
         assert abs(emb[0] - 1.0) < 1e-6
 
     def test_empty_store_returns_empty(self, tmp_workspace):
-        from nanobot.memory.embedding_store import EmbeddingStore
+        from summerclaw.memory.embedding_store import EmbeddingStore
         memory_dir = tmp_workspace / "memory"
         memory_dir.mkdir()
         es = EmbeddingStore(memory_dir)
@@ -320,7 +320,7 @@ class TestEmbeddingStore:
         assert mat.shape == (0, 0)
 
     def test_count(self, tmp_workspace):
-        from nanobot.memory.embedding_store import EmbeddingStore
+        from summerclaw.memory.embedding_store import EmbeddingStore
         memory_dir = tmp_workspace / "memory"
         memory_dir.mkdir()
         es = EmbeddingStore(memory_dir)
@@ -628,7 +628,7 @@ class TestHindsightDreamRun:
         mock_provider.chat_with_retry.assert_called_once()
 
     async def test_skill_phase_uses_builtin_skill_creator(self, dream, mock_provider, mock_runner, store):
-        from nanobot.agent.skills import BUILTIN_SKILLS_DIR
+        from summerclaw.agent.skills import BUILTIN_SKILLS_DIR
         store.append_history("Repeated workflow")
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKILL] test: desc")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
@@ -940,7 +940,7 @@ class TestHindsightMemoryAlgorithm:
         assert components.store is components.auto_compact._hindsight_store
 
     def test_import_from_memory_package(self):
-        from nanobot.memory import (
+        from summerclaw.memory import (
             HindsightAutoCompact,
             HindsightConsolidator,
             HindsightDream,
@@ -1327,7 +1327,7 @@ class TestHindsightDreamSkills:
             provider=MagicMock(),
             model="test-model",
         )
-        from nanobot.agent import skills as skills_mod
+        from summerclaw.agent import skills as skills_mod
         from pathlib import Path as _Path
         with patch.object(skills_mod, "BUILTIN_SKILLS_DIR", _Path("/nonexistent/path")):
             skills = d._list_existing_skills()
@@ -1345,7 +1345,7 @@ class TestHindsightDreamSkills:
             provider=MagicMock(),
             model="test-model",
         )
-        from nanobot.agent import skills as skills_mod
+        from summerclaw.agent import skills as skills_mod
         from pathlib import Path as _Path
         with patch.object(skills_mod, "BUILTIN_SKILLS_DIR", _Path("/nonexistent/path")):
             skills = d._list_existing_skills()
@@ -1361,7 +1361,7 @@ class TestHindsightDreamSkills:
             provider=MagicMock(),
             model="test-model",
         )
-        from nanobot.agent import skills as skills_mod
+        from summerclaw.agent import skills as skills_mod
         from pathlib import Path as _Path
         with patch.object(skills_mod, "BUILTIN_SKILLS_DIR", _Path("/nonexistent/path")):
             skills = d._list_existing_skills()
@@ -1416,7 +1416,7 @@ class TestHindsightDreamSkills:
             content="Analysis", finish_reason="stop",
         )
 
-        from nanobot.agent import skills as skills_mod
+        from summerclaw.agent import skills as skills_mod
         from pathlib import Path as _Path
         with patch.object(skills_mod, "BUILTIN_SKILLS_DIR", _Path("/nonexistent/path")):
             await d.run()

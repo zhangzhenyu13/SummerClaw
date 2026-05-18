@@ -1,12 +1,12 @@
 [project]
-name = "nanobot-ai"
-version = "0.1.5.post1"
+name = "summerclaw-ai"
+version = "0.2.3"
 description = "A lightweight personal AI assistant framework"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "nanobot contributors"}
+    {name = "summerclaw contributors"}
 ]
 keywords = ["ai", "agent", "chatbot"]
 classifiers = [
@@ -111,7 +111,7 @@ dev = [
 ]
 
 [project.scripts]
-nanobot = "nanobot.cli.commands:app"
+summerclaw = "summerclaw.cli.commands:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -122,24 +122,24 @@ allow-direct-references = true
 
 [tool.hatch.build]
 include = [
-    "nanobot/**/*.py",
-    "nanobot/templates/**/*.md",
-    "nanobot/skills/**/*.md",
-    "nanobot/skills/**/*.sh",
+    "summerclaw/**/*.py",
+    "summerclaw/templates/**/*.md",
+    "summerclaw/skills/**/*.md",
+    "summerclaw/skills/**/*.sh",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanobot"]
+packages = ["summerclaw"]
 
 [tool.hatch.build.targets.wheel.sources]
-"nanobot" = "nanobot"
+"summerclaw" = "summerclaw"
 
 [tool.hatch.build.targets.wheel.force-include]
-"bridge" = "nanobot/bridge"
+"bridge" = "summerclaw/bridge"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "nanobot/",
+    "summerclaw/",
     "bridge/",
     "README.md",
     "LICENSE",
@@ -158,7 +158,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["nanobot"]
+source = ["summerclaw"]
 omit = ["tests/*", "**/tests/*"]
 
 [tool.coverage.report]

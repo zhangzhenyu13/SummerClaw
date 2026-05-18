@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.agent.runner import AgentRunResult
-from nanobot.memory import MemoryStore
-from nanobot.memory.naive_memory.auto_compact import AutoCompact
-from nanobot.memory.naive_memory.consolidator import Consolidator
-from nanobot.memory.naive_memory.dream import Dream
+from summerclaw.agent.runner import AgentRunResult
+from summerclaw.memory import MemoryStore
+from summerclaw.memory.naive_memory.auto_compact import AutoCompact
+from summerclaw.memory.naive_memory.consolidator import Consolidator
+from summerclaw.memory.naive_memory.dream import Dream
 
-from nanobot.utils.gitstore import LineAge
+from summerclaw.utils.gitstore import LineAge
 
 
 # ============================================================================
@@ -268,7 +268,7 @@ class TestDream:
         store.append_history("event 1")
         mock_provider.chat_with_retry.return_value = MagicMock(content="Analysis")
 
-        from nanobot.agent import skills as skills_mod
+        from summerclaw.agent import skills as skills_mod
         from pathlib import Path as _Path
         with patch.object(skills_mod, "BUILTIN_SKILLS_DIR", _Path("/nonexistent/path")):
             await d.run()

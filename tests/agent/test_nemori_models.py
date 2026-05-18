@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from nanobot.memory.nemori_memory.models import Episode, Message, SemanticMemory
+from summerclaw.memory.nemori_memory.models import Episode, Message, SemanticMemory
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -106,25 +106,25 @@ class TestMessage:
         msg = Message.from_dict(d)
         assert msg.message_id  # auto-generated
 
-    def test_from_nanobot_message_basic(self):
+    def test_from_summerclaw_message_basic(self):
         d = {"role": "assistant", "content": "response"}
-        msg = Message.from_nanobot_message(d)
+        msg = Message.from_summerclaw_message(d)
         assert msg.role == "assistant"
         assert msg.content == "response"
 
-    def test_from_nanobot_message_with_tools(self):
+    def test_from_summerclaw_message_with_tools(self):
         d = {
             "role": "assistant",
             "content": "done",
             "timestamp": "2025-01-01T12:00:00",
             "tools_used": ["read_file", "edit_file"],
         }
-        msg = Message.from_nanobot_message(d)
+        msg = Message.from_summerclaw_message(d)
         assert msg.metadata["tools_used"] == ["read_file", "edit_file"]
 
-    def test_from_nanobot_message_invalid_timestamp(self):
+    def test_from_summerclaw_message_invalid_timestamp(self):
         d = {"role": "user", "content": "hi", "timestamp": "not-a-date"}
-        msg = Message.from_nanobot_message(d)
+        msg = Message.from_summerclaw_message(d)
         assert isinstance(msg.timestamp, datetime)  # fallback to now
 
     def test_custom_message_id(self):

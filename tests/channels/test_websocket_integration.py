@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import websockets
 
-from nanobot.channels.websocket import WebSocketChannel
-from nanobot.bus.events import OutboundMessage
+from summerclaw.channels.websocket import WebSocketChannel
+from summerclaw.bus.events import OutboundMessage
 from ws_test_client import WsTestClient, issue_token, issue_token_ok
 
 

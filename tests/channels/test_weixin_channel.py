@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 import pytest
 import httpx
 
-import nanobot.channels.weixin as weixin_mod
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.weixin import (
+import summerclaw.channels.weixin as weixin_mod
+from summerclaw.bus.queue import MessageBus
+from summerclaw.channels.weixin import (
     ITEM_IMAGE,
     ITEM_TEXT,
     MESSAGE_TYPE_BOT,
@@ -28,7 +28,7 @@ def _make_channel() -> tuple[WeixinChannel, MessageBus]:
         WeixinConfig(
             enabled=True,
             allow_from=["*"],
-            state_dir=tempfile.mkdtemp(prefix="nanobot-weixin-test-"),
+            state_dir=tempfile.mkdtemp(prefix="summerclaw-weixin-test-"),
         ),
         bus,
     )
@@ -1012,7 +1012,7 @@ async def test_download_media_item_non_image_requires_aes_key_even_with_full_url
 
 def _make_outbound_msg(chat_id: str = "wx-user", content: str = "", media: list | None = None):
     """Build a minimal OutboundMessage-like object for send() tests."""
-    from nanobot.bus.events import OutboundMessage
+    from summerclaw.bus.events import OutboundMessage
 
     return OutboundMessage(
         channel="weixin",

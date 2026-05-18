@@ -2,7 +2,7 @@
 
 import pytest
 
-from nanobot.memory.mastra_om_memory.reflector import (
+from summerclaw.memory.mastra_om_memory.reflector import (
     build_reflector_system_prompt,
     build_reflector_prompt,
     parse_reflector_output,

@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from nanobot.agent.tools.filesystem import EditFileTool, ReadFileTool, _find_match
-from nanobot.agent.tools import file_state
+from summerclaw.agent.tools.filesystem import EditFileTool, ReadFileTool, _find_match
+from summerclaw.agent.tools import file_state
 
 
 @pytest.fixture(autouse=True)

@@ -2,14 +2,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.queue import MessageBus
-from nanobot.memory.naive_memory import consolidator as consolidator_module
-from nanobot.providers.base import LLMResponse
+from summerclaw.agent.loop import AgentLoop
+from summerclaw.bus.queue import MessageBus
+from summerclaw.memory.naive_memory import consolidator as consolidator_module
+from summerclaw.providers.base import LLMResponse
 
 
 def _make_loop(tmp_path, *, estimated_tokens: int, context_window_tokens: int) -> AgentLoop:
-    from nanobot.providers.base import GenerationSettings
+    from summerclaw.providers.base import GenerationSettings
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
     provider.generation = GenerationSettings(max_tokens=0)

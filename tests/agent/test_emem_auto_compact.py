@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.memory.emem_memory.auto_compact import EMemAutoCompact
-from nanobot.memory.emem_memory.consolidator import EMemConsolidator
-from nanobot.memory.emem_memory.store import EMemStore
-from nanobot.session.manager import Session
+from summerclaw.memory.emem_memory.auto_compact import EMemAutoCompact
+from summerclaw.memory.emem_memory.consolidator import EMemConsolidator
+from summerclaw.memory.emem_memory.store import EMemStore
+from summerclaw.session.manager import Session
 
 
 # ===================================================================

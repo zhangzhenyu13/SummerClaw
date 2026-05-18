@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nanobot.memory.nemori_memory.models import Episode, SemanticMemory
-from nanobot.memory.nemori_memory.search import SearchMethod, SearchResult, UnifiedSearch
-from nanobot.memory.nemori_memory.store import NemoriStore
+from summerclaw.memory.nemori_memory.models import Episode, SemanticMemory
+from summerclaw.memory.nemori_memory.search import SearchMethod, SearchResult, UnifiedSearch
+from summerclaw.memory.nemori_memory.store import NemoriStore
 
 
 @pytest.fixture

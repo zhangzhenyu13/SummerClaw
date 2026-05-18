@@ -4,12 +4,12 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from pathlib import Path
 
-from nanobot.memory.mastra_om_memory import MastraOMMemoryAlgorithm
-from nanobot.memory.mastra_om_memory.store import MastraOMStore
-from nanobot.memory.mastra_om_memory.consolidator import MastraOMConsolidator
-from nanobot.memory.mastra_om_memory.dream import MastraOMDream
-from nanobot.memory.mastra_om_memory.auto_compact import MastraOMAutoCompact
-from nanobot.memory.mastra_om_memory.observer import (
+from summerclaw.memory.mastra_om_memory import MastraOMMemoryAlgorithm
+from summerclaw.memory.mastra_om_memory.store import MastraOMStore
+from summerclaw.memory.mastra_om_memory.consolidator import MastraOMConsolidator
+from summerclaw.memory.mastra_om_memory.dream import MastraOMDream
+from summerclaw.memory.mastra_om_memory.auto_compact import MastraOMAutoCompact
+from summerclaw.memory.mastra_om_memory.observer import (
     build_observer_system_prompt,
     format_messages_for_observer,
     OBSERVER_SYSTEM_PROMPT,
@@ -17,12 +17,12 @@ from nanobot.memory.mastra_om_memory.observer import (
     OBSERVATION_CONTEXT_PROMPT,
     OBSERVATION_CONTEXT_INSTRUCTIONS,
 )
-from nanobot.memory.mastra_om_memory.reflector import (
+from summerclaw.memory.mastra_om_memory.reflector import (
     build_reflector_system_prompt,
     REFLECTOR_SYSTEM_PROMPT,
     COMPRESSION_GUIDANCE,
 )
-from nanobot.memory.base import MemoryAlgorithm, MemoryComponents
+from summerclaw.memory.base import MemoryAlgorithm, MemoryComponents
 
 
 # ------------------------------------------------------------------

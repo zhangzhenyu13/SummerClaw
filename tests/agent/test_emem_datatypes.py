@@ -8,7 +8,7 @@ from hashlib import md5
 import numpy as np
 import pytest
 
-from nanobot.memory.emem_memory.datatypes import (
+from summerclaw.memory.emem_memory.datatypes import (
     ArgumentRecord,
     EDURecord,
     EMemConfig,

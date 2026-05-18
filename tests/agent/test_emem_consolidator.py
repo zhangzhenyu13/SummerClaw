@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.memory.emem_memory.consolidator import EMemConsolidator
-from nanobot.memory.emem_memory.store import EMemStore
+from summerclaw.memory.emem_memory.consolidator import EMemConsolidator
+from summerclaw.memory.emem_memory.store import EMemStore
 
 
 # ===================================================================
@@ -91,7 +91,7 @@ class TestEMemConsolidatorArchive:
             finish_reason="stop",
         )
         # Mock EDU extraction to return some EDUs
-        from nanobot.memory.emem_memory.datatypes import EDURecord
+        from summerclaw.memory.emem_memory.datatypes import EDURecord
         mock_edu_extractor.extract_from_history.return_value = [
             EDURecord(edu_id="edu-test-1", text="User deployed the app."),
         ]
@@ -303,7 +303,7 @@ class TestEMemConsolidatorEstimate:
         session.get_history.return_value = [{"role": "user", "content": "hello"}]
         session.key = "channel:chat123"
         with patch(
-            "nanobot.memory.naive_memory.consolidator.estimate_prompt_tokens_chain",
+            "summerclaw.memory.naive_memory.consolidator.estimate_prompt_tokens_chain",
             return_value=(42, "tiktoken"),
         ) as mock_estimate:
             tokens, source = consolidator.estimate_session_prompt_tokens(session)

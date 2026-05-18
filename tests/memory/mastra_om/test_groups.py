@@ -11,7 +11,7 @@ Comprehensive coverage of the observation-groups module:
 
 import pytest
 
-from nanobot.memory.mastra_om_memory.groups import (
+from summerclaw.memory.mastra_om_memory.groups import (
     ObservationGroup,
     generate_anchor_id,
     wrap_in_observation_group,

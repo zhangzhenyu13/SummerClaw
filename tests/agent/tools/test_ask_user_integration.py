@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.agent.tools.ask_user import ASK_USER_PENDING, AskUserTool
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.providers.base import LLMResponse, ToolCallRequest
+from summerclaw.agent.tools.ask_user import ASK_USER_PENDING, AskUserTool
+from summerclaw.agent.tools.registry import ToolRegistry
+from summerclaw.providers.base import LLMResponse, ToolCallRequest
 
 # -- Global constants for message length constraints ------------------------
-from nanobot.config.schema import AgentDefaults
+from summerclaw.config.schema import AgentDefaults
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 
@@ -41,7 +41,7 @@ def _make_injection_callback(queue: asyncio.Queue):
     """Async callback that drains *queue* and returns a list of dicts.
 
     The items in the queue should be dicts with ``role`` / ``content`` keys,
-    or :class:`~nanobot.bus.events.InboundMessage` objects.
+    or :class:`~summerclaw.bus.events.InboundMessage` objects.
     """
 
     async def inject_cb(**kwargs):
@@ -110,7 +110,7 @@ class TestAskUserBlockingFlow:
     async def test_ask_user_alone_blocks_loop_and_injects_reply(self):
         """LLM calls only ask_user → marker detected → user reply injected →
         loop continues with reply visible in next LLM turn → LLM finishes."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "my answer is 42"})
@@ -178,8 +178,8 @@ class TestAskUserBlockingFlow:
         """LLM calls ask_user + a normal tool in same turn →
         normal result is saved, ASK_USER_PENDING string is never sent to LLM,
         user reply injected, loop continues."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
-        from nanobot.agent.tools.self import MyTool
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.tools.self import MyTool
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "yes please"})
@@ -285,7 +285,7 @@ class TestAskUserBlockingFlow:
     @pytest.mark.asyncio
     async def test_consecutive_ask_user_calls(self):
         """First ask_user → inject → LLM asks again → inject → LLM finishes."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "Paris"})
@@ -344,7 +344,7 @@ class TestAskUserBlockingFlow:
     async def test_ask_user_on_last_iteration_injects_before_max_stop(self):
         """ask_user on last iteration → inject → loop exhausts iterations →
         max_iterations stop reason with injected messages in history."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "my answer"})
@@ -401,7 +401,7 @@ class TestAskUserBlockingFlow:
     async def test_conversation_history_preserved_through_ask_user(self):
         """The full conversation (including system prompt, user messages,
         assistant with tool calls) is preserved through the ask_user cycle."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "no thanks"})
@@ -486,7 +486,7 @@ class TestAskUserInjectionDraining:
     @pytest.mark.asyncio
     async def test_no_injection_callback_does_not_crash(self):
         """When injection_callback is None, the loop continues without error."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         call_count = {"n": 0}
 
@@ -525,7 +525,7 @@ class TestAskUserInjectionDraining:
     @pytest.mark.asyncio
     async def test_injection_callback_empty_returns_not_drained(self):
         """When injection_callback returns [], had_injections stays False."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         call_count = {"n": 0}
 
@@ -570,7 +570,7 @@ class TestAskUserInjectionDraining:
     async def test_injection_callback_receives_limit_param(self):
         """When callback accepts ``limit``, the limit value is
         _MAX_INJECTIONS_PER_TURN on the first call (ask_user drain)."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTIONS_PER_TURN
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTIONS_PER_TURN
 
         seen_limits: list[int] = []
         call_count = {"n": 0}
@@ -621,7 +621,7 @@ class TestAskUserInjectionDraining:
     @pytest.mark.asyncio
     async def test_injection_callback_exception_is_graceful(self):
         """If the injection_callback raises, the loop continues without crash."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         call_count = {"n": 0}
 
@@ -667,7 +667,7 @@ class TestAskUserInjectionDraining:
     @pytest.mark.asyncio
     async def test_multiple_messages_injected_at_once(self):
         """Callback returns multiple user messages → all injected."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "msg A"})
@@ -721,7 +721,7 @@ class TestAskUserInjectionDraining:
     async def test_injection_callback_limit_param_caps_messages(self):
         """With limit-aware callback, only limit-many messages get injected
         per drain call.  The ask_user drain is the first call."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTIONS_PER_TURN
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner, _MAX_INJECTIONS_PER_TURN
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         # Put more messages than _MAX_INJECTIONS_PER_TURN
@@ -779,8 +779,8 @@ class TestAskUserInjectionDraining:
     @pytest.mark.asyncio
     async def test_inbound_message_objects_converted_to_dicts(self):
         """InboundMessage objects from callback are properly converted to user dicts."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
-        from nanobot.bus.events import InboundMessage
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.bus.events import InboundMessage
 
         all_llm_messages: list[list[dict]] = []
         call_count = {"n": 0}
@@ -847,7 +847,7 @@ class TestAskUserLifecycle:
     async def test_hooks_fire_in_correct_order(self):
         """before_iteration → before_execute_tools → after_iteration in order,
         and after ask_user we see another before_iteration."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "reply"})
@@ -905,7 +905,7 @@ class TestAskUserLifecycle:
     @pytest.mark.asyncio
     async def test_ask_user_event_has_correct_status(self):
         """The tool event for ask_user must have status='ask_user', not 'ok' or 'error'."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "reply"})
@@ -957,7 +957,7 @@ class TestAskUserLifecycle:
         """Hook context.tool_results includes the raw results (including
         ASK_USER_PENDING) because it is set BEFORE the ask_user branch
         filters them out.  This is the current implementation behavior."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "reply"})
@@ -1015,7 +1015,7 @@ class TestAskUserLifecycle:
     @pytest.mark.asyncio
     async def test_had_injections_flag_in_result(self):
         """AgentRunResult.had_injections reflects whether any injections were drained."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         # Case 1: with injection
         q1: asyncio.Queue = asyncio.Queue()
@@ -1092,7 +1092,7 @@ class TestAskUserLifecycle:
     async def test_stop_reason_is_not_tool_error(self):
         """ask_user should NOT cause stop_reason='tool_error' even with
         fail_on_tool_error=True."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "reply"})
@@ -1152,7 +1152,7 @@ class TestAskUserStateReset:
         # the ask_user branch passes 0 explicitly to _try_drain_injections.
         # The test verifies that multiple ask_user calls each trigger a fresh
         # injection drain (each with its own budget).
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         # Queue with replies for two consecutive ask_user calls
         injection_queue: asyncio.Queue = asyncio.Queue()
@@ -1227,7 +1227,7 @@ class TestAskUserMessageFlow:
     async def test_normal_tool_results_preserved_with_ask_user(self):
         """When ask_user is mixed with a normal tool, the normal tool result
         appears in the next LLM call's messages and ASK_USER_PENDING never leaks."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "yes"})
@@ -1301,7 +1301,7 @@ class TestAskUserMessageFlow:
     async def test_ask_user_pending_marker_never_sent_to_llm(self):
         """The ASK_USER_PENDING string must never appear in any message
         sent to the LLM."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "reply"})
@@ -1355,7 +1355,7 @@ class TestAskUserMessageFlow:
     async def test_tool_calls_count_in_result_messages(self):
         """The result.messages should include the assistant message with
         tool_calls and the injected user reply."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "reply from user"})
@@ -1424,7 +1424,7 @@ class TestAskUserEdgeCases:
         ``result.startswith('Error')`` check.  This test verifies that
         priority is correct."""
         # We test at the _run_tool level with a proper ToolRegistry.
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         # Register the ask_user tool with a REAL ToolRegistry
         tools = _make_tool_registry()
@@ -1466,7 +1466,7 @@ class TestAskUserEdgeCases:
     async def test_ask_user_with_fail_on_tool_error_true(self):
         """Even with fail_on_tool_error=True, ask_user's ASK_USER_PENDING
         is NEVER treated as an error."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         tools = _make_tool_registry()
         provider = MagicMock()
@@ -1499,8 +1499,8 @@ class TestAskUserEdgeCases:
     @pytest.mark.asyncio
     async def test_ask_user_send_callback_is_awaited(self):
         """The send_callback should be called (awaited) with an OutboundMessage."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
-        from nanobot.bus.events import OutboundMessage
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.bus.events import OutboundMessage
 
         sent_messages: list[OutboundMessage] = []
 
@@ -1545,8 +1545,8 @@ class TestAskUserEdgeCases:
     @pytest.mark.asyncio
     async def test_ask_user_with_candidates_includes_options_in_message(self):
         """When candidates are provided, they appear in the OutboundMessage."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
-        from nanobot.bus.events import OutboundMessage
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.bus.events import OutboundMessage
 
         sent_messages: list[OutboundMessage] = []
 
@@ -1589,7 +1589,7 @@ class TestAskUserEdgeCases:
     async def test_ask_user_send_callback_none_does_not_crash(self):
         """If send_callback is None, the tool still returns the marker
         without trying to send anything."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         tools = ToolRegistry()
         ask_tool = AskUserTool(send_callback=None)
@@ -1622,7 +1622,7 @@ class TestAskUserEdgeCases:
     async def test_ask_user_not_registered_falls_back_to_registry_execute(self):
         """If the tool is not found via prepare_call, it falls through to
         tools.execute(), which should also work."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         # Register ask_user in a real registry (without prepare_call on mock)
         tools = ToolRegistry()
@@ -1657,7 +1657,7 @@ class TestAskUserEdgeCases:
     @pytest.mark.asyncio
     async def test_runner_result_contains_all_tool_names(self):
         """AgentRunResult.tools_used includes 'ask_user'."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "yes"})
@@ -1711,7 +1711,7 @@ class TestAskUserEdgeCases:
     async def test_ask_user_resets_empty_content_retries(self):
         """After ask_user, empty_content_retries is reset to 0, so
         subsequent empty responses get a fresh retry budget."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         await injection_queue.put({"role": "user", "content": "keep going"})
@@ -1760,7 +1760,7 @@ class TestAskUserEdgeCases:
     async def test_empty_injection_with_blank_content_filtered_out(self):
         """Messages with blank/whitespace-only content from callback
         should be filtered and not injected."""
-        from nanobot.agent.runner import AgentRunSpec, AgentRunner
+        from summerclaw.agent.runner import AgentRunSpec, AgentRunner
 
         injection_queue: asyncio.Queue = asyncio.Queue()
         # Put a blank message first, then a real one

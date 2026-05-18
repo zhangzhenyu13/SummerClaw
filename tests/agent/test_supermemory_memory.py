@@ -18,20 +18,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.memory.supermemory_memory.store import (
+from summerclaw.memory.supermemory_memory.store import (
     MemoryEdge,
     MemoryNode,
     MemoryRelation,
     SourceChunk,
     SupermemoryStore,
 )
-from nanobot.memory.supermemory_memory.consolidator import SupermemoryConsolidator
-from nanobot.memory.supermemory_memory.dream import SupermemoryDream
-from nanobot.memory.supermemory_memory.auto_compact import SupermemoryAutoCompact
-from nanobot.memory.supermemory_memory import SupermemoryMemoryAlgorithm
-from nanobot.memory.base import MemoryComponents
-from nanobot.agent.runner import AgentRunResult
-from nanobot.utils.gitstore import LineAge
+from summerclaw.memory.supermemory_memory.consolidator import SupermemoryConsolidator
+from summerclaw.memory.supermemory_memory.dream import SupermemoryDream
+from summerclaw.memory.supermemory_memory.auto_compact import SupermemoryAutoCompact
+from summerclaw.memory.supermemory_memory import SupermemoryMemoryAlgorithm
+from summerclaw.memory.base import MemoryComponents
+from summerclaw.agent.runner import AgentRunResult
+from summerclaw.utils.gitstore import LineAge
 
 
 # ===================================================================
@@ -1041,7 +1041,7 @@ class TestSupermemoryDreamPhase2:
         mock_provider: MagicMock,
         store: SupermemoryStore,
     ) -> None:
-        from nanobot.agent.skills import BUILTIN_SKILLS_DIR
+        from summerclaw.agent.skills import BUILTIN_SKILLS_DIR
 
         store.append_history("Repeated workflow")
         mock_provider.chat_with_retry.return_value = MagicMock(
@@ -1378,7 +1378,7 @@ class TestSupermemoryMemoryAlgorithm:
         tmp_path: Path,
         mock_provider: MagicMock,
     ) -> None:
-        from nanobot.memory.registry import MemoryRegistry
+        from summerclaw.memory.registry import MemoryRegistry
 
         registry = MemoryRegistry()
         registry.register(SupermemoryMemoryAlgorithm())

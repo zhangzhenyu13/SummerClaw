@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.memory.nemori_memory.merger import EpisodeMerger
-from nanobot.memory.nemori_memory.models import Episode
-from nanobot.memory.nemori_memory.store import NemoriStore
+from summerclaw.memory.nemori_memory.merger import EpisodeMerger
+from summerclaw.memory.nemori_memory.models import Episode
+from summerclaw.memory.nemori_memory.store import NemoriStore
 
 
 @pytest.fixture

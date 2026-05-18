@@ -3,14 +3,14 @@
 import json
 from pathlib import Path
 
-from nanobot.memory.emem_memory.datatypes import (
+from summerclaw.memory.emem_memory.datatypes import (
     ArgumentRecord,
     EDURecord,
     SessionRecord,
     compute_mdhash_id,
     min_max_normalize,
 )
-from nanobot.memory.emem_memory.store import ContentStore, EMemStore
+from summerclaw.memory.emem_memory.store import ContentStore, EMemStore
 
 import numpy as np
 

@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.memory.emem_memory.dream import EMemDream
-from nanobot.memory.emem_memory.store import EMemStore
-from nanobot.agent.runner import AgentRunResult
+from summerclaw.memory.emem_memory.dream import EMemDream
+from summerclaw.memory.emem_memory.store import EMemStore
+from summerclaw.agent.runner import AgentRunResult
 
 
 # ===================================================================
@@ -209,7 +209,7 @@ class TestEMemDreamPhase1:
         mock_provider.chat_with_retry.return_value = MagicMock(
             content="Analysis: deployment discussion detected.",
         )
-        from nanobot.memory.emem_memory.datatypes import EDURecord
+        from summerclaw.memory.emem_memory.datatypes import EDURecord
         mock_edu_extractor.extract_from_history.return_value = [
             EDURecord(edu_id="edu-dream-1", text="User deployed the app."),
         ]

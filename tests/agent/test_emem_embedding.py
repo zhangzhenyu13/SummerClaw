@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from nanobot.memory.emem_memory.embedding import EMemEmbedder
+from summerclaw.memory.emem_memory.embedding import EMemEmbedder
 
 
 # ===================================================================
@@ -20,7 +20,7 @@ class TestEMemEmbedderFromConfig:
     """Test EMemEmbedder.from_config() factory method."""
 
     def test_default_config_creates_openai_embedder(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig()
         emb = EMemEmbedder.from_config(cfg, fallback_api_key="fb-key")
@@ -31,7 +31,7 @@ class TestEMemEmbedderFromConfig:
         assert emb._api_key == "fb-key"
 
     def test_custom_model_and_batch_size(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig(model="text-embedding-ada-002", batch_size=8, normalize=False)
         emb = EMemEmbedder.from_config(cfg, fallback_api_key="key")
@@ -40,7 +40,7 @@ class TestEMemEmbedderFromConfig:
         assert emb.normalize is False
 
     def test_local_provider(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig(provider="local", model="all-MiniLM-L6-v2")
         emb = EMemEmbedder.from_config(cfg)
@@ -48,7 +48,7 @@ class TestEMemEmbedderFromConfig:
         assert emb.model_name == "all-MiniLM-L6-v2"
 
     def test_explicit_api_key_and_base(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig(api_key="explicit-key", api_base="https://custom.api/v1")
         emb = EMemEmbedder.from_config(cfg)
@@ -56,7 +56,7 @@ class TestEMemEmbedderFromConfig:
         assert emb._api_base == "https://custom.api/v1"
 
     def test_fallback_api_key_when_config_has_none(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig()  # api_key is None
         with patch.dict(os.environ, {}, clear=True):
@@ -64,7 +64,7 @@ class TestEMemEmbedderFromConfig:
             assert emb._api_key == "fb-key"
 
     def test_fallback_api_base_when_config_has_none(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig()  # api_base is None
         with patch.dict(os.environ, {}, clear=True):
@@ -72,7 +72,7 @@ class TestEMemEmbedderFromConfig:
             assert emb._api_base == "https://fb.api"
 
     def test_env_var_overrides_when_no_explicit_config(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig()
         with patch.dict(os.environ, {"OPENAI_API_KEY": "env-key", "OPENAI_BASE_URL": "https://env.api"}):
@@ -81,7 +81,7 @@ class TestEMemEmbedderFromConfig:
             assert emb._api_base == "https://env.api"
 
     def test_explicit_config_overrides_env_vars(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig(api_key="explicit-key")
         with patch.dict(os.environ, {"OPENAI_API_KEY": "env-key"}):
@@ -89,14 +89,14 @@ class TestEMemEmbedderFromConfig:
             assert emb._api_key == "explicit-key"
 
     def test_explicit_config_overrides_fallback(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig(api_key="explicit-key")
         emb = EMemEmbedder.from_config(cfg, fallback_api_key="fb-key")
         assert emb._api_key == "explicit-key"
 
     def test_override_batch_size_and_normalize(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         cfg = EmbeddingConfig(batch_size=16, normalize=True)
         emb = EMemEmbedder.from_config(cfg, batch_size=64, normalize=False)
@@ -440,7 +440,7 @@ class TestEMemEmbedderProviderInit:
         assert emb._initialized is True
 
     def test_from_config_with_provider(self) -> None:
-        from nanobot.config.schema import EmbeddingConfig
+        from summerclaw.config.schema import EmbeddingConfig
 
         mock_provider = MagicMock()
         cfg = EmbeddingConfig(model="text-embedding-3-large")

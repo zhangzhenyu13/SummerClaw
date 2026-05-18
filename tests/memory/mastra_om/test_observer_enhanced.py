@@ -7,7 +7,7 @@ sections from the official Mastra TypeScript codebase.
 
 import pytest
 
-from nanobot.memory.mastra_om_memory.observer import (
+from summerclaw.memory.mastra_om_memory.observer import (
     build_observer_system_prompt,
     OBSERVER_EXTRACTION_INSTRUCTIONS,
     OBSERVER_OUTPUT_FORMAT,

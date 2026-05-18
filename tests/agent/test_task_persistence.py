@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.agent.task_persistence import PersistedTask, TaskRegistry
+from summerclaw.agent.task_persistence import PersistedTask, TaskRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ class TestElapsedDescription:
 
 class TestListAllSessions:
     def test_returns_sessions_with_metadata(self, tmp_path: Path) -> None:
-        from nanobot.session.manager import Session, SessionManager
+        from summerclaw.session.manager import Session, SessionManager
 
         mgr = SessionManager(tmp_path)
         s1 = Session(key="telegram:111")
@@ -181,7 +181,7 @@ class TestListAllSessions:
         assert "telegram:222" in keys
 
     def test_filters_pending_user_turn(self, tmp_path: Path) -> None:
-        from nanobot.session.manager import Session, SessionManager
+        from summerclaw.session.manager import Session, SessionManager
 
         mgr = SessionManager(tmp_path)
         s = Session(key="slack:abc")
@@ -197,7 +197,7 @@ class TestListAllSessions:
         assert pending[0].key == "slack:abc"
 
     def test_empty_directory(self, tmp_path: Path) -> None:
-        from nanobot.session.manager import SessionManager
+        from summerclaw.session.manager import SessionManager
 
         mgr = SessionManager(tmp_path)
         assert mgr.list_all_sessions() == []
@@ -211,11 +211,11 @@ class TestListAllSessions:
 @pytest.mark.asyncio
 async def test_cmd_tasks_no_tasks(tmp_path: Path) -> None:
     """cmd_tasks should return gracefully when nothing is running."""
-    from nanobot.agent.task_persistence import TaskRegistry
-    from nanobot.bus.events import InboundMessage
-    from nanobot.command.builtin import cmd_tasks
-    from nanobot.command.router import CommandContext
-    from nanobot.session.manager import SessionManager
+    from summerclaw.agent.task_persistence import TaskRegistry
+    from summerclaw.bus.events import InboundMessage
+    from summerclaw.command.builtin import cmd_tasks
+    from summerclaw.command.router import CommandContext
+    from summerclaw.session.manager import SessionManager
 
     msg = InboundMessage(
         channel="telegram", sender_id="u1", chat_id="chat1", content="/tasks",
@@ -236,11 +236,11 @@ async def test_cmd_tasks_no_tasks(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_cmd_tasks_resume_missing_id(tmp_path: Path) -> None:
     """Resuming an unknown ID should return a 'not found' message."""
-    from nanobot.agent.task_persistence import TaskRegistry
-    from nanobot.bus.events import InboundMessage
-    from nanobot.command.builtin import cmd_tasks_resume
-    from nanobot.command.router import CommandContext
-    from nanobot.session.manager import SessionManager
+    from summerclaw.agent.task_persistence import TaskRegistry
+    from summerclaw.bus.events import InboundMessage
+    from summerclaw.command.builtin import cmd_tasks_resume
+    from summerclaw.command.router import CommandContext
+    from summerclaw.session.manager import SessionManager
 
     msg = InboundMessage(
         channel="telegram", sender_id="u1", chat_id="chat1", content="/tasks resume xyz",
@@ -260,10 +260,10 @@ async def test_cmd_tasks_resume_missing_id(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_cmd_tasks_discard_subagent(tmp_path: Path) -> None:
     """Discarding a known subagent task should remove it from the registry."""
-    from nanobot.agent.task_persistence import TaskRegistry
-    from nanobot.bus.events import InboundMessage
-    from nanobot.command.builtin import cmd_tasks_discard
-    from nanobot.command.router import CommandContext
+    from summerclaw.agent.task_persistence import TaskRegistry
+    from summerclaw.bus.events import InboundMessage
+    from summerclaw.command.builtin import cmd_tasks_discard
+    from summerclaw.command.router import CommandContext
 
     registry = TaskRegistry(tmp_path)
     task = _make_task("zzz99999")

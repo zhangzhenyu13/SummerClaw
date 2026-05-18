@@ -1,6 +1,6 @@
-# UnionClaw
+# SummerClaw
 
-UnionClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), with the following key features:
+SummerClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), with the following key features:
 
 - **Browser-Enhanced Planning** — Plans on any task even with a relatively weak model by leveraging real-time web search.
 - **DAG-Based Subagent Pools** — Directed Acyclic Graph scheduling with configurable recursion depths.
@@ -11,7 +11,7 @@ UnionClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), wit
 
 ```
    ╔═════════════════════════════════════════════════════════════════╗
-   ║                    UnionClaw  Runtime Stack                      ║
+   ║                    SummerClaw  Runtime Stack                      ║
    ╠═════════════════════════════════════════════════════════════════╣
    │  ①  Public Support Layer                                        │
    │     Config Center · State Hub · Monitoring · Exception Guard    │
@@ -47,22 +47,26 @@ UnionClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), wit
 ```
 
 ## Quick Start
+1. Install summerclaw:
+   ```bash
+   pip install -e .
+   ```
 
-1. Copy the example config:
+2. Copy the example config:
   Configure your models and apis, then
    ```bash
-   cp config.json.example ~/.nanobot/config.json
+   cp config.json.example ~/.summerclaw/config.json
    ```
-2. Start the gateway:
+3. Start the gateway:
    ```bash
-   nanobot gateway
+   summerclaw gateway
    ```
 
-## UnionClaw Advantages
+## SummerClaw Advantages
 
-UnionClaw extends [Nanobot](https://github.com/HKUDS/nanobot) with four architectural innovations that related frameworks lack or only partially implement. It also adopts [GenericAgent](https://github.com/Generative-AI-Research-Company/GenericAgent)'s L0-L4 layered memory as one of its pluggable backends (`layerga_memory`).
+SummerClaw extends [Nanobot](https://github.com/HKUDS/nanobot) with four architectural innovations that related frameworks lack or only partially implement. It also adopts [GenericAgent](https://github.com/Generative-AI-Research-Company/GenericAgent)'s L0-L4 layered memory as one of its pluggable backends (`layerga_memory`).
 
-| Capability | UnionClaw | Nanobot | GenericAgent | Hermes | OpenClaw |
+| Capability | SummerClaw | Nanobot | GenericAgent | Hermes | OpenClaw |
 |---|---|---|---|---|---|
 | **Browser-Enhanced Planning** | ✓ Independent web-enhanced decision layer — search → purify → inject, fully automated closed loop | ✗ No planning layer; tool calls are single-step with no pre-planning enhancement | ✗ No web-enhanced planning layer; offline reasoning only | ✗ Manual search-tool calls only; no automatic search injection during planning | ✗ Pure offline planning; no internet augmentation |
 | **DAG Subagent Pools** | ✓ Built-in DAG scheduler in the execution engine; `max_subagent_depth` 0~N freely configurable | ✗ Pure single-agent; no scheduling layer, no DAG, no subagent pool | ✗ Single-agent execution; no DAG scheduler or parallel subagent pool | ✗ Single-agent sequential execution; no task decomposition, no concurrency | △ Basic task splitting, but no recursive depth config and no concurrent agent pool |
@@ -73,7 +77,7 @@ UnionClaw extends [Nanobot](https://github.com/HKUDS/nanobot) with four architec
 
 ## Memory
 
-UnionClaw ships with a **pluggable memory algorithm** system. Choose from eight backends via the `memoryAlgorithm` config key:
+SummerClaw ships with a **pluggable memory algorithm** system. Choose from eight backends via the `memoryAlgorithm` config key:
 
 | Algorithm | Strategy | Best For |
 |-----------|----------|----------|
@@ -90,7 +94,7 @@ See the **[Memory Documentation](docs/MEMORY.md)** for storage structures, confi
 
 ## Tools
 
-UnionClaw provides a set of **atomic tool primitives** that form the agent's interaction surface with the world — every capability is a self-contained `Tool` instance with typed parameters, validation, and safety constraints, all managed by a unified `ToolRegistry`.
+SummerClaw provides a set of **atomic tool primitives** that form the agent's interaction surface with the world — every capability is a self-contained `Tool` instance with typed parameters, validation, and safety constraints, all managed by a unified `ToolRegistry`.
 
 | Category | Tools | Gate |
 |----------|-------|------|
@@ -110,7 +114,7 @@ See the **[Tools Documentation](docs/TOOLS.md)** for full tool descriptions, par
 
 ## Skill Distillation
 
-UnionClaw supports two orthogonal skill distillation modes that can run independently or simultaneously.
+SummerClaw supports two orthogonal skill distillation modes that can run independently or simultaneously.
 
 ### Mode 1 — Dream  *(Memory Consolidation)*
 
@@ -157,12 +161,12 @@ Watches tool-call history and distills recurring patterns into reusable skills p
 
 - [Tools — Available Tools & Configuration](docs/TOOLS.md)
 - [Memory — Algorithms & Storage](docs/MEMORY.md)
-- [Nanobot Extended Docs](readme.nanobot.md)
-- [Upstream Nanobot](https://github.com/HKUDS/nanobot)
+- [SummerClaw Extended Docs](summerclaw.md)
+- [Upstream SummerClaw](https://github.com/HKUDS/summerclaw)
 
-## Configuration
+## Key Configuration
 
-Copy `config.json.example` to `~/.nanobot/config.json` and edit as needed.
+Copy `config.json.example` to `~/.summerclaw/config.json` and edit as needed.
 All keys below live under `agents.defaults` unless noted otherwise.
 
 ### Plan-and-Solve + DAG Subagents

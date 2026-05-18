@@ -1,7 +1,7 @@
 {
   "agents": {
     "defaults": {
-      "workspace": "~/.nanobot/workspace",
+      "workspace": "~/.summerclaw/workspace",
       "plan_and_solve": true,
       "_plan_and_solve_note": "← DEPRECATED. Use executionMode instead. If true (legacy), maps to 'auto'.",
       "executionMode": "auto",

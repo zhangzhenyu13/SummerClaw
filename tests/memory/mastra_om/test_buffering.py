@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.memory.mastra_om_memory.buffering import (
+from summerclaw.memory.mastra_om_memory.buffering import (
     BufferingCoordinator,
     BufferingStore,
     BufferedChunk,
