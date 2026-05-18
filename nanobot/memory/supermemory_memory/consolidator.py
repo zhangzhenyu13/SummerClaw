@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
+import numpy as np
 from loguru import logger
 
+from nanobot.memory.embedding_store import batch_cosine_np
 from nanobot.memory.naive_memory.consolidator import Consolidator
 from nanobot.memory.supermemory_memory.store import (
     MemoryEdge,
@@ -79,6 +80,21 @@ class SupermemoryConsolidator(Consolidator):
     4. Store chunks for hybrid search
     5. Detect relationships with existing memories
     """
+
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        """Compute cosine similarity between two vectors.
+
+        Returns 0.0 for empty vectors, mismatched lengths, or zero-norm vectors.
+        """
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
 
     def __init__(
         self,
@@ -381,10 +397,13 @@ class SupermemoryConsolidator(Consolidator):
                 if existing.id == new_node.id:
                     continue
                 # Prefer embedding-based similarity when both have embeddings
-                if new_node.embedding and existing.embedding:
-                    score = self._cosine_similarity(
-                        new_node.embedding, existing.embedding,
-                    )
+                new_emb = new_node.embedding
+                existing_emb = self._super_store._embeddings.get(existing.id)
+                if new_emb and existing_emb:
+                    score = float(batch_cosine_np(
+                        np.array(new_emb, dtype=np.float32),
+                        np.array([existing_emb], dtype=np.float32),
+                    )[0])
                 else:
                     # Fallback to Jaccard word overlap
                     score = self._jaccard_similarity(
@@ -422,18 +441,6 @@ class SupermemoryConsolidator(Consolidator):
                     )
                 except ValueError:
                     pass  # Target node might have been removed
-
-    @staticmethod
-    def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
-        """Compute cosine similarity between two embedding vectors."""
-        if not vec_a or not vec_b or len(vec_a) != len(vec_b):
-            return 0.0
-        dot = sum(a * b for a, b in zip(vec_a, vec_b))
-        norm_a = math.sqrt(sum(a * a for a in vec_a))
-        norm_b = math.sqrt(sum(b * b for b in vec_b))
-        if norm_a == 0.0 or norm_b == 0.0:
-            return 0.0
-        return dot / (norm_a * norm_b)
 
     @staticmethod
     def _jaccard_similarity(text_a: str, text_b: str) -> float:
@@ -552,8 +559,8 @@ class SupermemoryConsolidator(Consolidator):
                 for node in all_new_nodes:
                     emb = embeddings_map.get(node.memory)
                     if emb:
-                        node.embedding = emb
-                        self._super_store.add_node(node)  # Update with embedding
+                        self._super_store.set_node_embedding(node.id, emb)
+                        node.embedding = emb  # transient for _detect_relationships
 
                 await self._detect_relationships(all_new_nodes)
                 embedded_count = len([n for n in all_new_nodes if n.embedding])

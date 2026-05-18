@@ -517,7 +517,7 @@ class TestActivateBufferedObservations:
         assert result is not None
         assert "* 🔴 Buffered observation" in result
         mock_consolidator.store.append_observations.assert_called_once()
-        mock_consolidator.store.append_history.assert_called_once()
+        mock_consolidator.store.append_om_ops.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_chunks(self, coordinator, buffering_store, mock_consolidator):

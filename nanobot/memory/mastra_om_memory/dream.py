@@ -1,7 +1,7 @@
 """MastraOM Dream — cron-scheduled deep memory processing using Observer/Reflector.
 
 Two-phase memory processor adapted from naive Dream:
-Phase 1: Analyze history.jsonl + observations via Observer
+Phase 1: Analyze raw history.jsonl + OBSERVATIONS.md via Observer
 Phase 2: Edit MEMORY.md, SOUL.md, USER.md via AgentRunner (with Reflector guidance)
 
 The Dream also supports skill creation (dreamed-* skills) when it detects
@@ -33,8 +33,10 @@ class MastraOMDream:
     Uses MastraOM's Observer/Reflector pipeline for offline deep processing:
 
     Phase 1 (Analyze):
-        Reads history.jsonl + current files, sends to an analysis LLM
-        (using Observer-style prompt) to identify what should change.
+        Reads **raw** history.jsonl entries + current OBSERVATIONS.md, sends to
+        an analysis LLM (using Observer-style prompt) to identify what should change.
+        Raw history provides full conversation context; observations provide the
+        Observer's distilled understanding.
 
     Phase 2 (Edit):
         Delegates to AgentRunner with read_file/edit_file tools to make
@@ -187,22 +189,33 @@ class MastraOMDream:
         )
         current_soul = self.store.read_soul() or "(empty)"
         current_user = self.store.read_user() or "(empty)"
-        current_observations = self.store.read_observations() or "(empty)"
+
+        # Observations as message-like records (same format as get_memory_context())
+        raw_obs = self.store.read_observations()
+        obs_records = self.store._observations_as_records(raw_obs) if raw_obs else ""
 
         logger.info(
             "MastraOM Dream: loaded files — MEMORY.md={} chars, SOUL.md={} chars, "
-            "USER.md={} chars, OBSERVATIONS.md={} chars",
+            "USER.md={} chars, obs records={} chars",
             len(current_memory), len(current_soul),
-            len(current_user), len(current_observations),
+            len(current_user), len(obs_records),
         )
 
-        file_context = (
-            f"## Current Date\n{current_date}\n\n"
-            f"## Current OBSERVATIONS.md ({len(current_observations)} chars)\n{current_observations}\n\n"
-            f"## Current MEMORY.md ({len(current_memory)} chars)\n{current_memory}\n\n"
-            f"## Current SOUL.md ({len(current_soul)} chars)\n{current_soul}\n\n"
+        file_context_parts = [f"## Current Date\n{current_date}"]
+        if obs_records:
+            file_context_parts.append(
+                f"## Past Conversation Records (higher priority)\n{obs_records}"
+            )
+        file_context_parts.append(
+            f"## Current MEMORY.md ({len(current_memory)} chars)\n{current_memory}"
+        )
+        file_context_parts.append(
+            f"## Current SOUL.md ({len(current_soul)} chars)\n{current_soul}"
+        )
+        file_context_parts.append(
             f"## Current USER.md ({len(current_user)} chars)\n{current_user}"
         )
+        file_context = "\n\n".join(file_context_parts)
 
         # Phase 1: Analyze
         phase1_prompt = (

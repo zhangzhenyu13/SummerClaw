@@ -200,3 +200,35 @@ class NemoriConsolidator:
             logger.error(
                 "Semantic generation failed for %s/%s: %s", agent_id, user_id, e
             )
+
+    async def maybe_consolidate_by_tokens(self, session: Any) -> None:
+        """Token-budget-aware consolidation entry point required by AgentLoop.
+
+        Nemori uses its own buffer-based processing pipeline instead of
+        traditional message archiving. This method triggers processing
+        if there are unprocessed messages in the buffer.
+
+        Args:
+            session: Session object containing messages and metadata.
+        """
+        # Extract user_id and agent_id from session
+        user_id = getattr(session, "user_id", "default")
+        agent_id = getattr(session, "agent_id", "default")
+
+        # Get unprocessed message count
+        unprocessed_count = self._store.count_unprocessed()
+
+        if unprocessed_count >= self._buffer_size_min:
+            # Trigger background processing
+            task = asyncio.create_task(self._process_background(user_id, agent_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+            logger.debug(
+                "Nemori maybe_consolidate_by_tokens triggered for %s/%s: %d unprocessed messages",
+                agent_id, user_id, unprocessed_count,
+            )
+        else:
+            logger.debug(
+                "Nemori maybe_consolidate_by_tokens idle for %s/%s: %d unprocessed messages (min=%d)",
+                agent_id, user_id, unprocessed_count, self._buffer_size_min,
+            )

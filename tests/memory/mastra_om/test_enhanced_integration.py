@@ -323,7 +323,7 @@ class TestBufferingActivationPipeline:
 
         # Observations appended to store
         mock_consolidator.store.append_observations.assert_called_once()
-        mock_consolidator.store.append_history.assert_called_once()
+        mock_consolidator.store.append_om_ops.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_buffered_observations_have_group_tags(self):

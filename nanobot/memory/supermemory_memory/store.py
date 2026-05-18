@@ -10,7 +10,6 @@ Extends the naive MemoryStore with Supermemory-specific data structures:
 from __future__ import annotations
 
 import json
-import math
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -19,8 +18,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from loguru import logger
 
+from nanobot.memory.embedding_store import EmbeddingStore, batch_cosine_np
 from nanobot.memory.naive_memory.store import MemoryStore
 from nanobot.utils.helpers import ensure_dir
 
@@ -167,6 +168,21 @@ class SupermemoryStore(MemoryStore):
 
     _DEFAULT_MAX_NODES = 5000
 
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        """Compute cosine similarity between two vectors.
+
+        Returns 0.0 for empty vectors, mismatched lengths, or zero-norm vectors.
+        """
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
     def __init__(
         self,
         workspace: Path,
@@ -186,6 +202,9 @@ class SupermemoryStore(MemoryStore):
         # Migrate legacy supermemory-specific files if needed
         if algo_name:
             self._migrate_supermemory_legacy()
+
+        # Embedding store — numpy binary chunked files, decoupled from JSON content
+        self._embeddings = EmbeddingStore(self.memory_dir, prefix="supermemory_embeddings")
 
         # In-memory caches (lazy-loaded, flushed on write)
         self._nodes: dict[str, MemoryNode] = {}
@@ -223,6 +242,30 @@ class SupermemoryStore(MemoryStore):
                 eid: MemoryEdge.from_dict(ed)
                 for eid, ed in raw.get("edges", {}).items()
             }
+
+            # Migrate old-format embeddings (stored inline in JSON nodes) to the
+            # numpy binary EmbeddingStore, then strip them from records.
+            _has_old_embeddings = any(
+                isinstance(n.embedding, list) and len(n.embedding) > 0
+                for n in self._nodes.values()
+            )
+            if _has_old_embeddings:
+                logger.info(
+                    "SupermemoryStore: detected old-format embeddings in JSON — migrating to .npy"
+                )
+                migrated = 0
+                for node in self._nodes.values():
+                    emb = node.embedding
+                    if emb and isinstance(emb, list) and len(emb) > 0:
+                        self._embeddings.add(node.id, emb)
+                        node.embedding = None
+                        migrated += 1
+                if migrated > 0:
+                    self._save_graph()
+                    logger.info(
+                        "SupermemoryStore: migrated {} embeddings, JSON cleaned", migrated,
+                    )
+
             # Load chunks
             for chunk_file in sorted(self._chunks_dir.glob("chunk_*.json")):
                 try:
@@ -239,10 +282,13 @@ class SupermemoryStore(MemoryStore):
             self._chunks = {}
 
     def _save_graph(self) -> None:
-        """Persist memory graph to disk."""
+        """Persist memory graph to disk (embeddings live in EmbeddingStore, not JSON)."""
         try:
             raw = {
-                "nodes": {nid: n.to_dict() for nid, n in self._nodes.items()},
+                "nodes": {
+                    nid: {k: v for k, v in n.to_dict().items() if k != "embedding"}
+                    for nid, n in self._nodes.items()
+                },
                 "edges": {eid: e.to_dict() for eid, e in self._edges.items()},
             }
             self._graph_file.write_text(
@@ -260,6 +306,9 @@ class SupermemoryStore(MemoryStore):
         """Add or update a memory node. Returns the node ID."""
         is_new = node.id not in self._nodes
         self._nodes[node.id] = node
+        # Store embedding in decoupled EmbeddingStore if present
+        if node.embedding and isinstance(node.embedding, list) and len(node.embedding) > 0:
+            self._embeddings.add(node.id, node.embedding)
         self._save_graph()
         self._compact_nodes()
         if is_new:
@@ -566,29 +615,16 @@ class SupermemoryStore(MemoryStore):
             logger.debug("Keyword search: query='{}' → no results", query[:60])
         return top
 
-    @staticmethod
-    def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
-        """Compute cosine similarity between two embedding vectors."""
-        if not vec_a or not vec_b or len(vec_a) != len(vec_b):
-            return 0.0
-        dot = sum(a * b for a, b in zip(vec_a, vec_b))
-        norm_a = math.sqrt(sum(a * a for a in vec_a))
-        norm_b = math.sqrt(sum(b * b for b in vec_b))
-        if norm_a == 0.0 or norm_b == 0.0:
-            return 0.0
-        return dot / (norm_a * norm_b)
-
     def search_memories_by_embedding(
         self,
         query_embedding: list[float],
         limit: int = 10,
         threshold: float = 0.3,
     ) -> list[tuple[MemoryNode, float]]:
-        """Semantic search using embedding cosine similarity.
+        """Semantic search using embedding cosine similarity via EmbeddingStore.
 
-        Compares the query embedding against all indexed memory nodes
-        that have embeddings, returning the top-k matches above the
-        similarity threshold.
+        Uses numpy-accelerated batch cosine similarity on the decoupled
+        EmbeddingStore for efficient vector search across all indexed nodes.
 
         Args:
             query_embedding: The embedding vector of the search query.
@@ -601,15 +637,22 @@ class SupermemoryStore(MemoryStore):
         if not query_embedding:
             return []
 
+        mem_ids, emb_matrix = self._embeddings.get_all_embeddings()
+        if len(mem_ids) == 0 or emb_matrix.shape[1] == 0:
+            return []
+
+        q_emb = np.array(query_embedding, dtype=np.float32)
+        scores = batch_cosine_np(q_emb, emb_matrix)
+
         scored: list[tuple[MemoryNode, float]] = []
-        for node in self._nodes.values():
-            if node.is_forgotten or not node.is_latest:
+        for mid, sim in zip(mem_ids, scores):
+            sim_f = float(sim)
+            if sim_f < threshold:
                 continue
-            if not node.embedding:
+            node = self._nodes.get(mid)
+            if node is None or node.is_forgotten or not node.is_latest:
                 continue
-            sim = self._cosine_similarity(query_embedding, node.embedding)
-            if sim >= threshold:
-                scored.append((node, sim))
+            scored.append((node, sim_f))
 
         scored.sort(key=lambda x: x[1], reverse=True)
         top = scored[:limit]
@@ -623,7 +666,10 @@ class SupermemoryStore(MemoryStore):
         return top
 
     def set_node_embedding(self, node_id: str, embedding: list[float]) -> bool:
-        """Set the embedding for an existing memory node.
+        """Set the embedding for an existing memory node via EmbeddingStore.
+
+        Embeddings are stored in the decoupled numpy binary store,
+        not inline in the JSON graph file.
 
         Returns True if the node was found and updated, False otherwise.
         """
@@ -631,8 +677,11 @@ class SupermemoryStore(MemoryStore):
         if node is None:
             logger.debug("set_node_embedding: node {} not found", node_id[:8])
             return False
+        self._embeddings.add(node_id, embedding)
+        # Also set on the in-memory node for transient access (consolidator)
         node.embedding = embedding
         node.updated_at = datetime.now().isoformat()
+        # Save graph without embedding field
         self._save_graph()
         logger.debug(
             "Embedding set for node {} (dim={})", node_id[:8], len(embedding),
@@ -640,10 +689,11 @@ class SupermemoryStore(MemoryStore):
         return True
 
     def get_nodes_without_embeddings(self) -> list[MemoryNode]:
-        """Return latest, active nodes that are missing embeddings."""
+        """Return latest, active nodes that are missing embeddings in EmbeddingStore."""
         return [
             n for n in self._nodes.values()
-            if n.is_latest and not n.is_forgotten and not n.embedding
+            if n.is_latest and not n.is_forgotten
+            and self._embeddings.get(n.id) is None
         ]
 
     # ------------------------------------------------------------------
@@ -830,7 +880,7 @@ class SupermemoryStore(MemoryStore):
             "version_chains": version_chains,
             "total_edges": len(self._edges),
             "total_chunks": len(self._chunks),
-            "embedded_nodes": len([n for n in nodes if n.embedding]),
+            "embedded_nodes": self._embeddings.get_embedding_count(),
             "edges_by_type": {
                 rt.value: len([e for e in self._edges.values() if e.edge_type == rt])
                 for rt in MemoryRelation

@@ -10,6 +10,18 @@ Your workspace is at: {{ workspace_path }}
 - Long-term memory: {{ workspace_path }}/{{ memory_rel_path }} (automatically managed by Dream — do not edit directly)
 - History log: {{ workspace_path }}/{{ history_rel_path }} (append-only JSONL; prefer built-in `grep` for search).
 - Custom skills: {{ workspace_path }}/skills/{% raw %}{skill-name}{% endraw %}/SKILL.md
+- Project outputs: {{ workspace_path }}/outputs/<project-name>/ — ALL user work products go here
+- Output metadata: {{ workspace_path }}/outputs/meta.json (automatically recorded by write_file)
+
+## 📁 File Organization Rules — CRITICAL
+**NEVER create files directly in workspace root** (except system files: AGENTS.md, SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md).
+**ALWAYS use `outputs/<project-name>/` for ALL user-requested work products:**
+  - Code projects: `outputs/f1-racer/src/main.py`
+  - Web pages: `outputs/f1-grand-prix/index.html`
+  - Documents: `outputs/reports/analysis.md`
+  - Data files: `outputs/data-extract/results.json`
+**The `write_file` tool will REJECT paths outside outputs/, skills/, or memory/.**
+**Keep workspace root clean** — only system files + memory/ + skills/ + outputs/ directories.
 
 ## ⚠️ File Path Rules — CRITICAL
 When reading or searching memory/history files, you MUST use these EXACT paths — do NOT guess or use any other path:

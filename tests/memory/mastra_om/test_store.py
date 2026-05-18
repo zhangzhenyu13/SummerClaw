@@ -141,8 +141,8 @@ class TestMastraOMStoreContext:
         store.write_observations("Date: May 9\n* 🔴 User likes Python")
         ctx = store.get_memory_context()
         assert "User likes Python" in ctx
-        assert "<observations>" in ctx
-        assert "IMPORTANT" in ctx
+        assert "Past Conversation Records" in ctx
+        assert "higher informational priority" in ctx
 
     def test_get_memory_context_with_memory(self, store):
         store.write_memory("# Memory\n- Project X")

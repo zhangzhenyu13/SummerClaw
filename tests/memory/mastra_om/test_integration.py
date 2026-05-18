@@ -128,7 +128,7 @@ class TestStoreIntegration:
         context = store.get_memory_context()
         assert "Python" in context
         assert "Project X" in context
-        assert "observations" in context.lower()
+        assert "Past Conversation Records" in context
 
 
 # ------------------------------------------------------------------

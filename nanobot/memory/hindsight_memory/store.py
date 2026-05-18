@@ -28,8 +28,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from loguru import logger
 
+from nanobot.memory.embedding_store import EmbeddingStore, batch_cosine_np
 from nanobot.memory.naive_memory.store import MemoryStore as _NaiveStore
 from nanobot.utils.helpers import ensure_dir
 
@@ -169,8 +171,6 @@ def _extract_entities(text: str) -> set[str]:
 
 
 # ============================================================================
-# HindsightStore
-# ============================================================================
 
 class HindsightStore(_NaiveStore):
     """File-based store with built-in local TEMPR multi-strategy memory engine.
@@ -244,6 +244,9 @@ class HindsightStore(_NaiveStore):
         self._embedding_model = embedding_model
         self._max_memories = max_memories
 
+        # Embedding store — numpy binary chunked files, decoupled from content
+        self._embeddings = EmbeddingStore(self.memory_dir, prefix="hindsight_embeddings")
+
         # Memory bank
         self._memories_path = self.memory_dir / "hindsight_memories.json"
 
@@ -251,7 +254,7 @@ class HindsightStore(_NaiveStore):
         if algo_name:
             self._migrate_hindsight_legacy()
 
-        self._memories: dict[str, dict] = {}  # mem_id → record
+        self._memories: dict[str, dict] = {}  # mem_id → record (no embedding field)
         self._bm25 = _BM25Index()
         # Entity → set of memory IDs (for graph expansion)
         self._entity_index: dict[str, set[str]] = defaultdict(set)
@@ -291,6 +294,25 @@ class HindsightStore(_NaiveStore):
             with open(self._memories_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._memories = data.get("memories", {})
+
+            # Migrate old-format embeddings (stored in JSON) to the new
+            # numpy binary EmbeddingStore, then strip them from records.
+            _has_old_embeddings = any(
+                isinstance(rec.get("embedding"), list) and len(rec.get("embedding", [])) > 0
+                for rec in self._memories.values()
+            )
+            if _has_old_embeddings:
+                logger.info(
+                    "HindsightStore: detected old-format embeddings in JSON — migrating to .npy"
+                )
+                migrated = self._embeddings.import_from_dict(self._memories)
+                if migrated > 0:
+                    # Persist the cleaned JSON (no embeddings) immediately
+                    self._save_memories()
+                    logger.info(
+                        "HindsightStore: migrated {} embeddings, JSON cleaned", migrated,
+                    )
+
             # Rebuild BM25 index and entity index
             for mem_id, rec in self._memories.items():
                 tokens = _tokenize(rec.get("content", ""))
@@ -326,7 +348,10 @@ class HindsightStore(_NaiveStore):
                 self._bm25._avg_dl = (
                     sum(self._bm25._doc_lengths.values()) / self._bm25._doc_count
                 )
-            logger.info("HindsightStore: loaded {} memories", self.memory_count)
+            logger.info(
+                "HindsightStore: loaded {} memories, {} embeddings",
+                self.memory_count, self._embeddings.get_embedding_count(),
+            )
         except Exception:
             logger.exception("Failed to load Hindsight memories; starting fresh")
             self._memories = {}
@@ -336,9 +361,14 @@ class HindsightStore(_NaiveStore):
 
     def _save_memories(self) -> None:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        # Strip embeddings from records — they live in EmbeddingStore now.
+        clean: dict[str, Any] = {}
+        for mid, rec in self._memories.items():
+            r = {k: v for k, v in rec.items() if k != "embedding"}
+            clean[mid] = r
         data: dict[str, Any] = {
-            "memories": self._memories,
-            "version": 2,
+            "memories": clean,
+            "version": 3,
             "entity_count": len(self._entity_index),
         }
         tmp = self._memories_path.with_suffix(".json.tmp")
@@ -361,6 +391,7 @@ class HindsightStore(_NaiveStore):
             for ent in rec.get("entities", []):
                 self._entity_index.get(ent, set()).discard(mid)
             self._links.pop(mid, None)
+            self._embeddings.remove(mid)
             del self._memories[mid]
         logger.info("HindsightStore: trimmed {} old memories", len(to_remove))
 
@@ -404,11 +435,12 @@ class HindsightStore(_NaiveStore):
         mem_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
-        # Generate embedding (best-effort)
+        # Generate embedding (best-effort) — stored in numpy binary store
         embedding: list[float] | None = None
         emb_results = self._try_embed([content])
         if emb_results:
             embedding = emb_results[0]
+            self._embeddings.add(mem_id, embedding)
 
         # Extract entities for graph expansion
         entities = sorted(_extract_entities(content))
@@ -421,7 +453,6 @@ class HindsightStore(_NaiveStore):
             "content": content.strip(),
             "context": context,
             "timestamp": now,
-            "embedding": embedding,
             "fact_type": fact_type,
             "source_type": "manual",
             "entities": entities,
@@ -601,19 +632,13 @@ class HindsightStore(_NaiveStore):
         if budget in ("mid", "high") and self._can_embed():
             query_embs = self._try_embed([query])
             if query_embs:
-                q_emb = query_embs[0]
-                mem_ids: list[str] = []
-                embeddings: list[list[float]] = []
-                for mid, rec in self._memories.items():
-                    emb = rec.get("embedding")
-                    if emb and len(emb) > 0:
-                        mem_ids.append(mid)
-                        embeddings.append(emb)
-                if embeddings:
-                    scores = _batch_cosine(q_emb, embeddings)
+                q_emb = np.array(query_embs[0], dtype=np.float32)
+                mem_ids, emb_matrix = self._embeddings.get_all_embeddings()
+                if len(mem_ids) > 0 and emb_matrix.shape[1] > 0:
+                    scores = batch_cosine_np(q_emb, emb_matrix)
                     emb_results = sorted(
                         [
-                            (mid, s)
+                            (mid, float(s))
                             for mid, s in zip(mem_ids, scores)
                             if s > 0
                         ],
@@ -936,14 +961,14 @@ class HindsightStore(_NaiveStore):
         if not embedding:
             return
 
+        new_emb_np = np.array(embedding, dtype=np.float32)
+        mem_ids, emb_matrix = self._embeddings.get_all_embeddings()
+
         similarities: list[tuple[str, float]] = []
-        for mid, rec in self._memories.items():
+        for i, mid in enumerate(mem_ids):
             if mid == new_id:
                 continue
-            emb = rec.get("embedding")
-            if not emb:
-                continue
-            sim = _cosine_similarity(embedding, emb)
+            sim = float(_cosine_similarity(embedding, emb_matrix[i].tolist()))
             if sim >= self._SEMANTIC_KNN_THRESHOLD:
                 similarities.append((mid, sim))
 
@@ -1014,7 +1039,6 @@ class HindsightStore(_NaiveStore):
                 "content": merged_text,
                 "context": f"auto-consolidated from {len(mem_ids)} world facts",
                 "timestamp": now,
-                "embedding": None,
                 "fact_type": "observation",
                 "source_type": "consolidation",
                 "entities": sorted(set(
@@ -1028,10 +1052,12 @@ class HindsightStore(_NaiveStore):
                 "_source_ids": mem_ids,
             }
 
-            # Generate embedding for observation
+            # Generate embedding for observation — stored in numpy binary store
+            obs_embedding: list[float] | None = None
             emb_results = self._try_embed([merged_text[:2000]])
             if emb_results:
-                observation["embedding"] = emb_results[0]
+                obs_embedding = emb_results[0]
+                self._embeddings.add(obs_id, obs_embedding)
 
             self._memories[obs_id] = observation
             tokens = _tokenize(merged_text)
@@ -1039,8 +1065,8 @@ class HindsightStore(_NaiveStore):
                 self._bm25.add(obs_id, tokens)
             for ent in observation.get("entities", []):
                 self._entity_index[ent].add(obs_id)
-            if observation.get("embedding"):
-                self._compute_knn_links(obs_id, observation["embedding"])
+            if obs_embedding:
+                self._compute_knn_links(obs_id, obs_embedding)
 
             new_obs_count += 1
 

@@ -252,6 +252,175 @@ class TestHindsightStoreLocalTEMPR:
         assert s2.memory_count >= 1
 
 
+class TestEmbeddingStore:
+    """Test the numpy binary EmbeddingStore decoupled from content JSON."""
+
+    def test_add_and_get_embedding(self, tmp_workspace):
+        from nanobot.memory.embedding_store import EmbeddingStore
+        memory_dir = tmp_workspace / "memory"
+        memory_dir.mkdir()
+        es = EmbeddingStore(memory_dir)
+        es.add("id1", [0.1, 0.2, 0.3])
+        emb = es.get("id1")
+        assert emb is not None
+        assert len(emb) == 3
+        assert abs(emb[0] - 0.1) < 1e-6
+
+    def test_get_nonexistent_returns_none(self, tmp_workspace):
+        from nanobot.memory.embedding_store import EmbeddingStore
+        memory_dir = tmp_workspace / "memory"
+        memory_dir.mkdir()
+        es = EmbeddingStore(memory_dir)
+        assert es.get("nonexistent") is None
+
+    def test_remove_embedding(self, tmp_workspace):
+        from nanobot.memory.embedding_store import EmbeddingStore
+        memory_dir = tmp_workspace / "memory"
+        memory_dir.mkdir()
+        es = EmbeddingStore(memory_dir)
+        es.add("id1", [0.1, 0.2, 0.3])
+        assert es.get("id1") is not None
+        es.remove("id1")
+        assert es.get("id1") is None
+
+    def test_get_all_embeddings(self, tmp_workspace):
+        from nanobot.memory.embedding_store import EmbeddingStore
+        memory_dir = tmp_workspace / "memory"
+        memory_dir.mkdir()
+        es = EmbeddingStore(memory_dir)
+        es.add("a", [1.0, 0.0, 0.0])
+        es.add("b", [0.0, 1.0, 0.0])
+        es.add("c", [0.0, 0.0, 1.0])
+        ids, mat = es.get_all_embeddings()
+        assert len(ids) == 3
+        assert mat.shape == (3, 3)
+        assert "a" in ids
+        assert "b" in ids
+        assert "c" in ids
+
+    def test_persistence_across_instances(self, tmp_workspace):
+        from nanobot.memory.embedding_store import EmbeddingStore
+        memory_dir = tmp_workspace / "memory"
+        memory_dir.mkdir()
+        es1 = EmbeddingStore(memory_dir)
+        es1.add("id1", [1.0, 2.0, 3.0])
+
+        es2 = EmbeddingStore(memory_dir)
+        emb = es2.get("id1")
+        assert emb is not None
+        assert abs(emb[0] - 1.0) < 1e-6
+
+    def test_empty_store_returns_empty(self, tmp_workspace):
+        from nanobot.memory.embedding_store import EmbeddingStore
+        memory_dir = tmp_workspace / "memory"
+        memory_dir.mkdir()
+        es = EmbeddingStore(memory_dir)
+        ids, mat = es.get_all_embeddings()
+        assert ids == []
+        assert mat.shape == (0, 0)
+
+    def test_count(self, tmp_workspace):
+        from nanobot.memory.embedding_store import EmbeddingStore
+        memory_dir = tmp_workspace / "memory"
+        memory_dir.mkdir()
+        es = EmbeddingStore(memory_dir)
+        assert es.get_embedding_count() == 0
+        es.add("a", [0.1, 0.2])
+        es.add("b", [0.3, 0.4])
+        assert es.get_embedding_count() == 2
+
+
+class TestHindsightStoreEmbeddingDecoupling:
+    """Verify embedding/content decoupling in HindsightStore."""
+
+    def test_json_has_no_embedding_field(self, tmp_workspace):
+        """hindsight_memories.json must NOT contain embedding data."""
+        s = HindsightStore(tmp_workspace)
+        async def _test():
+            await s.aretain("test content")
+        asyncio.run(_test())
+
+        json_path = s.memory_dir / "hindsight_memories.json"
+        with open(json_path) as f:
+            data = json.load(f)
+        for rec in data["memories"].values():
+            assert "embedding" not in rec, "JSON must not contain embedding field"
+
+    def test_embedding_stored_in_npy(self, tmp_workspace, mock_provider):
+        """Embeddings must be stored in .npy files, not JSON."""
+        s = HindsightStore(
+            tmp_workspace,
+            provider=mock_provider,
+            embedding_model="test-embed-model",
+        )
+        async def _test():
+            await s.aretain("test with embedding")
+        asyncio.run(_test())
+
+        # Check .npy files exist
+        import glob
+        npy_files = glob.glob(str(s.memory_dir / "hindsight_embeddings_*.npy"))
+        assert len(npy_files) >= 1, "Must have at least one .npy chunk file"
+
+        # Check embedding index exists
+        idx_path = s.memory_dir / "hindsight_embeddings_index.json"
+        assert idx_path.exists(), "Embedding index must exist"
+
+    def test_embedding_persistence_across_instances(self, tmp_workspace, mock_provider):
+        """Embeddings must survive store re-instantiation."""
+        s1 = HindsightStore(
+            tmp_workspace,
+            provider=mock_provider,
+            embedding_model="test-embed-model",
+        )
+        async def _test():
+            await s1.aretain("persistent with embeddings")
+        asyncio.run(_test())
+
+        # Re-open — embeddings should be loaded from .npy
+        s2 = HindsightStore(
+            tmp_workspace,
+            provider=mock_provider,
+            embedding_model="test-embed-model",
+        )
+        assert s2._embeddings.get_embedding_count() >= 1
+
+    def test_old_format_auto_migration(self, tmp_workspace):
+        """Old JSON with embedding field is auto-migrated to .npy on load."""
+        memory_dir = tmp_workspace / "memory"
+        memory_dir.mkdir(parents=True)
+        # Simulate old-format JSON with embeddings
+        old_data = {
+            "memories": {
+                "test-id": {
+                    "id": "test-id",
+                    "content": "old format memory",
+                    "embedding": [0.1, 0.2, 0.3],
+                    "timestamp": "2025-01-01T00:00:00+00:00",
+                    "fact_type": "world",
+                    "entities": [],
+                    "_knn": [],
+                    "_causal_links": [],
+                }
+            },
+            "version": 2,
+        }
+        json_path = memory_dir / "hindsight_memories.json"
+        with open(json_path, "w") as f:
+            json.dump(old_data, f)
+
+        # Load — should trigger migration
+        s = HindsightStore(tmp_workspace)
+        assert s.memory_count >= 1
+        # JSON should be cleaned
+        with open(json_path) as f:
+            data = json.load(f)
+        for rec in data["memories"].values():
+            assert "embedding" not in rec
+        # Embedding should be in .npy
+        assert s._embeddings.get_embedding_count() >= 1
+
+
 # ============================================================================
 # Test HindsightConsolidator
 # ============================================================================
@@ -477,7 +646,8 @@ class TestHindsightDreamRun:
             content="---\nname: dreamed-test-skill\ndescription: Test\n---\n",
         )
         assert "Successfully wrote" in result
-        assert (store.workspace / "skills" / "dreamed-test-skill" / "SKILL.md").exists()
+        # SkillPrefixWriteFileTool prepends "dreamed--hindsight_memory-" prefix
+        assert (store.workspace / "skills" / "dreamed--hindsight_memory-test-skill" / "SKILL.md").exists()
 
     async def test_line_age_threshold(self, dream, mock_provider, mock_runner, store):
         """End-to-end: stale lines get age suffix, fresh lines don't."""

@@ -5,7 +5,7 @@ UnionClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), wit
 - **Browser-Enhanced Planning** — Plans on any task even with a relatively weak model by leveraging real-time web search.
 - **DAG-Based Subagent Pools** — Directed Acyclic Graph scheduling with configurable recursion depths.
 - **ReAct Worker & Re-planner** — Self-improves the planner DAG based on environment feedback.
-- **[Enhanced Memory Consolidation & Auto-Skill Learning](docs/MEMORY.md)** — Pluggable memory algorithms (naive / Layerga / EMem / Nemori / ReMe / Mem0V3 / Supermemory / Hindsight / MastraOM) with automatic skill distillation inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+- **[Enhanced Memory Consolidation & Auto-Skill Learning](docs/MEMORY.md)** — Pluggable memory algorithms (naive / Layerga / EMem / Nemori / Mem0V3 / Supermemory / Hindsight / MastraOM) with automatic skill distillation inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
 ## Architecture
 
@@ -36,8 +36,8 @@ UnionClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), wit
    │  ⑦  Memory Layer                                      ★ NEW    │
    │     Consolidator (context pressure) · AutoCompact (session TTL) │
    │     MemoryStore → SOUL.md · USER.md · MEMORY.md · history.jsonl│
-   │     ↑  Pluggable: naive / layerga / emem / nemori / remem /    │
-   │     │             mem0v3 / supermemory / hindsight / mastra_om  │
+   │     ↑  Pluggable: naive / layerga / emem / nemori / mem0v3 /    │
+   │     │             supermemory / hindsight / mastra_om  │
    ╠════════════════════ ▼ async · observes history ═══════════════════╣
    │  ⑧  Skill Distillation Layer                          ★ NEW    │
    │     Dream:  cron 2h · /dream  →  dreamed-* skills              │
@@ -73,7 +73,7 @@ UnionClaw extends [Nanobot](https://github.com/HKUDS/nanobot) with four architec
 
 ## Memory
 
-UnionClaw ships with a **pluggable memory algorithm** system. Choose from nine backends via the `memoryAlgorithm` config key:
+UnionClaw ships with a **pluggable memory algorithm** system. Choose from eight backends via the `memoryAlgorithm` config key:
 
 | Algorithm | Strategy | Best For |
 |-----------|----------|----------|
@@ -81,7 +81,6 @@ UnionClaw ships with a **pluggable memory algorithm** system. Choose from nine b
 | `emem_memory` | EDU extraction + embedding vectors | Structured fact & entity tracking |
 | `layerga_memory` | L0-L4 layered (constitution → insight → facts → SOP → archives) | Self-organising hierarchical knowledge |
 | `nemori_memory` | Episode + semantic self-organising | Long-term knowledge evolution |
-| `remem_memory` | ReMeLight engine adapter | External memory engine integration |
 | `mem0v3_memory` | ADD-only single-pass extraction + entity linking + multi-signal fusion | Token-efficient LLM-native memory |
 | `supermemory_memory` | Chunk-based + relational versioning + temporal grounding + hybrid search + static/dynamic classification + auto-forgetting | SOTA agent memory with version tracking |
 | `hindsight_memory` | Built-in local TEMPR engine (RRF fusion + fact types + graph expansion) | Zero-dependency multi-strategy retrieval |
@@ -192,7 +191,7 @@ All keys below live under `agents.defaults` unless noted otherwise.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `memoryAlgorithm` | string | `"naive_memory"` | Select the memory backend: `naive_memory`, `layerga_memory`, `emem_memory`, `nemori_memory`, `remem_memory`, `mem0v3_memory`, `supermemory_memory`, `hindsight_memory`, or `mastra_om_memory` |
+| `memoryAlgorithm` | string | `"naive_memory"` | Select the memory backend: `naive_memory`, `layerga_memory`, `emem_memory`, `nemori_memory`, `mem0v3_memory`, `supermemory_memory`, `hindsight_memory`, or `mastra_om_memory` |
 
 ### Skill Distillation — Dream  *(⑦ Mode 1)*
 

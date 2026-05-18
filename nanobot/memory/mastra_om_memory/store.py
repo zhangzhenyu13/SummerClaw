@@ -1,8 +1,9 @@
-"""MastraOM store — file I/O for OBSERVATIONS.md, history.jsonl, SOUL.md, USER.md.
+"""MastraOM store — file I/O for OBSERVATIONS.md, history.jsonl, om-ops.jsonl, SOUL.md, USER.md.
 
 Based on Mastra's Observational Memory architecture:
 - OBSERVATIONS.md: the observation log (replaces raw message history as it grows)
-- history.jsonl: conversation history (append-only)
+- history.jsonl: raw conversation history (append-only, used by Dream for analysis)
+- om-ops.jsonl: OM operation log (Observer/Reflector/Buffer activation summaries)
 - SOUL.md / USER.md: permanent persona files
 
 The Observer agent converts raw messages → observations; the Reflector condenses them.
@@ -30,7 +31,8 @@ class MastraOMStore:
 
     Files managed:
     - memory/OBSERVATIONS.md  — dense observation log
-    - memory/history.jsonl     — conversation history (append-only JSONL)
+    - memory/history.jsonl     — raw conversation history (append-only JSONL)
+    - memory/om-ops.jsonl      — OM operation log (summary entries)
     - SOUL.md / USER.md        — persona files
     - memory/.cursor           — history cursor
     - memory/.dream_cursor     — Dream processing cursor
@@ -63,6 +65,7 @@ class MastraOMStore:
         self.observations_file = self.memory_dir / "OBSERVATIONS.md"
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "history.jsonl"
+        self.om_ops_file = self.memory_dir / "om-ops.jsonl"
         self.legacy_history_file = self.memory_dir / "HISTORY.md"
         if algo_name:
             self.soul_file = self.memory_dir / "SOUL.md"
@@ -337,21 +340,27 @@ class MastraOMStore:
     # -- context injection (used by context.py) ------------------------------
 
     def get_memory_context(self) -> str:
-        """Return observations + MEMORY.md as combined context."""
+        """Return observations + MEMORY.md as combined message context.
+
+        Observations are presented as message-like records rather than an opaque
+        block. This allows any consumer (Dream, AgentLoop context, etc.) to
+        treat observations as part of the message stream without knowing about
+        the Observer/Reflector internals.
+        """
         observations = self.read_observations()
         long_term = self.read_memory()
 
         parts: list[str] = []
         if observations:
-            parts.append(
-                "The following observations block contains your memory of past "
-                "conversations with this user.\n\n"
-                f"<observations>\n{observations}\n</observations>\n\n"
-                "IMPORTANT: When responding, reference specific details from these "
-                "observations. Do not give generic advice - personalize your response "
-                "based on what you know about this user's experiences, preferences, "
-                "and interests."
-            )
+            obs_records = self._observations_as_records(observations)
+            if obs_records.strip():
+                parts.append(
+                    "## Past Conversation Records\n\n"
+                    "The following records capture key insights distilled from past "
+                    "conversations. Treat them as remembered conversation history — "
+                    "they carry higher informational priority than raw messages:\n\n"
+                    f"{obs_records}"
+                )
         if long_term:
             parts.append(f"## Long-term Memory\n{long_term}")
 
@@ -366,10 +375,39 @@ class MastraOMStore:
             )
         return combined
 
+    @staticmethod
+    def _observations_as_records(observations_text: str) -> str:
+        """Convert raw OBSERVATIONS.md text into message-like records.
+
+        Strips markdown headers and observation group tags, keeps only the
+        fact lines (starting with *), and presents them as conversational
+        memory records.
+        """
+        lines: list[str] = []
+        for line in observations_text.split("\n"):
+            stripped = line.strip()
+            # Skip markdown headers, empty lines, and observation group tags
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                continue
+            if stripped.startswith("<observation-group") or stripped.startswith("</observation-group"):
+                continue
+            # Keep fact lines (starting with *)
+            if stripped.startswith("*"):
+                # Remove the leading "* " and present as a record
+                fact = stripped[1:].strip()
+                if fact:
+                    lines.append(fact)
+        return "\n".join(lines) if lines else ""
+
     # -- history.jsonl — append-only, JSONL format ---------------------------
 
     def append_history(self, entry: str) -> int:
-        """Append *entry* to history.jsonl and return its auto-incrementing cursor."""
+        """Append a raw conversation entry to history.jsonl and return its cursor.
+
+        This stores raw/full message content, used by Dream for deep analysis.
+        OM pipeline operation summaries go to om-ops.jsonl via append_om_ops()."""
         cursor = self._next_cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         record = {
@@ -451,6 +489,39 @@ class MastraOMStore:
             for entry in entries:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    # -- om-ops.jsonl — OM operation log (Observer/Reflector/Buffer summaries) --
+
+    def append_om_ops(self, entry: str) -> None:
+        """Append an OM operation summary entry to om-ops.jsonl.
+
+        Unlike history.jsonl, om-ops.jsonl entries have no cursor and are
+        purely for debugging/tracking OM pipeline operations.
+        """
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        record = {
+            "timestamp": ts,
+            "content": strip_think(entry.rstrip()) or entry.rstrip(),
+        }
+        with open(self.om_ops_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        logger.debug("[OM:store] appended om-ops entry: {}", entry[:80])
+
+    def read_om_ops(self) -> list[dict[str, Any]]:
+        """Read all entries from om-ops.jsonl."""
+        entries: list[dict[str, Any]] = []
+        try:
+            with open(self.om_ops_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entries.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+        except FileNotFoundError:
+            pass
+        return entries
+
     # -- dream cursor --------------------------------------------------------
 
     def get_last_dream_cursor(self) -> int:
@@ -498,6 +569,9 @@ class MastraOMStore:
         self.append_history(
             f"[RAW] {len(messages)} messages\n"
             f"{self._format_messages(messages)}"
+        )
+        self.append_om_ops(
+            f"[RAW-ARCHIVE] {len(messages)} messages raw-dumped (Observer failed/degenerate)"
         )
         logger.warning(
             "MastraOM consolidation degraded: raw-archived {} messages", len(messages)

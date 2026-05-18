@@ -527,15 +527,15 @@ class TestSkillPrefixWriteFileTool:
 
     @pytest.mark.asyncio
     async def test_non_skills_path_not_rewritten(self, tmp_path, skills_dir):
-        """Prefix enforcement only applies under skills/."""
+        """Prefix enforcement only applies under skills/ — outputs/ paths pass through unchanged."""
         tool = SkillPrefixWriteFileTool(
             skill_prefix="dreamed--naive_memory",
             workspace=tmp_path,
             allowed_dir=tmp_path,  # allow writing anywhere
         )
         result = await tool.execute(
-            path="README.md",
+            path="outputs/test-file.txt",
             content="# Test",
         )
         assert "Successfully wrote" in result
-        assert (tmp_path / "README.md").exists()
+        assert (tmp_path / "outputs" / "test-file.txt").exists()

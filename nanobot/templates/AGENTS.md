@@ -17,3 +17,13 @@ Get USER_ID and CHANNEL from the current session (e.g., `8281248569` and `telegr
 - **Rewrite**: `write_file` to replace all tasks
 
 When the user asks for a recurring/periodic task, update `HEARTBEAT.md` instead of creating a one-time cron reminder.
+
+## File Organization
+
+- **NEVER create files directly in workspace root** (except system files: AGENTS.md, SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md)
+- **ALWAYS use `outputs/<project-name>/` for ALL user-requested work products**
+  - Code: `outputs/<project>/src/...`
+  - Web: `outputs/<project>/index.html`
+  - Docs: `outputs/<project>/report.md`
+- The `write_file` tool enforces this automatically
+- This keeps the workspace clean and organized

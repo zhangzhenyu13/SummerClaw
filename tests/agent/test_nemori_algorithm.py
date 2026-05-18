@@ -2,8 +2,6 @@
 
 Verifies that build() constructs proper MemoryComponents with the correct
 types for all sub-components.
-
-Analogous to the ReMeMemoryAlgorithm tests in test_remem_memory.py.
 """
 
 from pathlib import Path
@@ -92,7 +90,7 @@ class TestNemoriMemoryAlgorithm:
             max_tool_result_chars=16000,
             annotate_line_ages=False,
         )
-        data_dir = tmp_path / "memory" / "nemori"
+        data_dir = tmp_path / "memory" / "nemori_memory"
         assert data_dir.exists()
         assert data_dir.is_dir()
 

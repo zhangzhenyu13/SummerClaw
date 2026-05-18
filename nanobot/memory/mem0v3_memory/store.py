@@ -1,14 +1,15 @@
 """Mem0V3 store — file-based vector store with entity linking and SQLite message log.
 
 Ports the core storage architecture of mem0 v3 to nanobot's file-based
-workspace model.  Zero external dependencies beyond the standard library
-and ``numpy`` (optional, for cosine similarity; pure-Python fallback included).
+workspace model.  Embeddings are stored in numpy binary chunks via
+EmbeddingStore, decoupled from the JSON records.
 
 Layers:
-  - Memory records: JSON file with {id, text, hash, lemmatized, embedding, entities, created_at, ...}
-  - Entity store:   JSON file with {id, text, type, linked_memory_ids, embedding}
+  - Memory records: JSON file with {id, text, hash, lemmatized, entities, created_at, ...}
+  - Entity store:   JSON file with {id, text, type, linked_memory_ids}
   - Message log:    SQLite (mirrors mem0's SQLiteManager)
   - BM25 index:     simple TF-IDF inverted index (no external lib needed)
+  - Embedding store: numpy .npy chunks (mem0v3_mem_embeddings_*, mem0v3_ent_embeddings_*)
 """
 
 from __future__ import annotations
@@ -26,45 +27,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 from loguru import logger
 
+from nanobot.memory.embedding_store import EmbeddingStore, batch_cosine_np
 from nanobot.memory.migrate import maybe_migrate_legacy_files
-
-# ---------------------------------------------------------------------------
-# Pure-Python cosine similarity (avoids numpy dependency for basic ops)
-# ---------------------------------------------------------------------------
-
-try:
-    import numpy as np  # noqa: F401
-    _HAS_NUMPY = True
-except ImportError:
-    _HAS_NUMPY = False
-
-
-def _dot(a: list[float], b: list[float]) -> float:
-    if len(a) != len(b):
-        return 0.0
-    return sum(x * y for x, y in zip(a, b))
-
-
-def _norm(v: list[float]) -> float:
-    return math.sqrt(sum(x * x for x in v))
-
-
-def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Cosine similarity between two vectors. Returns 0 on zero-vector edge cases."""
-    dot = _dot(a, b)
-    na = _norm(a)
-    nb = _norm(b)
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
-
-
-def batch_cosine(query: list[float], candidates: list[list[float]]) -> list[float]:
-    """Compute cosine similarity between query and each candidate."""
-    return [cosine_similarity(query, c) for c in candidates]
-
 
 # ---------------------------------------------------------------------------
 # Simple BM25-like inverted index
@@ -264,12 +231,21 @@ class Mem0V3Store:
         self.memory_file = self._memory_md_path
         self.history_file = self.memory_dir / "history.jsonl"
 
+        # Embedding stores — numpy binary chunked files, decoupled from JSON
+        self._mem_embeddings = EmbeddingStore(self.memory_dir, prefix="mem0v3_mem_embeddings")
+        self._ent_embeddings = EmbeddingStore(self.memory_dir, prefix="mem0v3_ent_embeddings")
+
         # Migrate legacy shared files if needed
         if algo_name:
             self._migrate_from_legacy()
 
         # In-memory state
         self._memories: dict[str, dict] = {}   # memory_id -> record
+        self._entities: dict[str, dict] = {}   # entity_id -> record
+        self._bm25 = BM25Index()
+        self._messages = MessageLog(str(self._db_path))
+
+        self._load()
 
     def _migrate_from_legacy(self) -> None:
         """Migrate data from the legacy shared location to the algorithm-specific dir."""
@@ -287,24 +263,42 @@ class Mem0V3Store:
                 "history.jsonl",
             ],
         )
-        self._entities: dict[str, dict] = {}   # entity_id -> record
-        self._bm25 = BM25Index()
-        self._messages = MessageLog(str(self._db_path))
-
-        self._load()
 
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
     def _load(self) -> None:
-        """Load all state from disk."""
+        """Load all state from disk, migrating old inline embeddings to EmbeddingStore."""
         # Memories
         if self._memories_path.exists():
             try:
                 with open(self._memories_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self._memories = data.get("memories", {})
+
+                # Migrate old-format embeddings to EmbeddingStore
+                _has_old_mem_embs = any(
+                    isinstance(rec.get("embedding"), list) and len(rec.get("embedding", [])) > 0
+                    for rec in self._memories.values()
+                )
+                if _has_old_mem_embs:
+                    logger.info(
+                        "Mem0V3Store: detected old-format memory embeddings in JSON — migrating to .npy"
+                    )
+                    mem_migrated = 0
+                    for mem_id, rec in self._memories.items():
+                        emb = rec.get("embedding")
+                        if emb and isinstance(emb, list) and len(emb) > 0:
+                            self._mem_embeddings.add(mem_id, emb)
+                            rec.pop("embedding", None)
+                            mem_migrated += 1
+                    if mem_migrated > 0:
+                        self._save_memories()
+                        logger.info(
+                            "Mem0V3Store: migrated {} memory embeddings, JSON cleaned", mem_migrated,
+                        )
+
                 # Rebuild BM25 from loaded memories
                 for mem_id, rec in self._memories.items():
                     tokens = rec.get("lemmatized", "").split()
@@ -326,13 +320,38 @@ class Mem0V3Store:
                 with open(self._entities_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self._entities = data.get("entities", {})
+
+                # Migrate old-format entity embeddings to EmbeddingStore
+                _has_old_ent_embs = any(
+                    isinstance(rec.get("embedding"), list) and len(rec.get("embedding", [])) > 0
+                    for rec in self._entities.values()
+                )
+                if _has_old_ent_embs:
+                    logger.info(
+                        "Mem0V3Store: detected old-format entity embeddings in JSON — migrating to .npy"
+                    )
+                    ent_migrated = 0
+                    for eid, erec in self._entities.items():
+                        emb = erec.get("embedding")
+                        if emb and isinstance(emb, list) and len(emb) > 0:
+                            self._ent_embeddings.add(eid, emb)
+                            erec.pop("embedding", None)
+                            ent_migrated += 1
+                    if ent_migrated > 0:
+                        self._save_entities()
+                        logger.info(
+                            "Mem0V3Store: migrated {} entity embeddings, JSON cleaned", ent_migrated,
+                        )
             except Exception:
                 logger.warning("Failed to load entities; starting fresh")
                 self._entities = {}
 
     def _save_memories(self) -> None:
-        """Persist memories to JSON."""
-        data: dict[str, Any] = {"memories": self._memories, "version": 1}
+        """Persist memories to JSON (embeddings live in EmbeddingStore, not JSON)."""
+        clean: dict[str, Any] = {}
+        for mid, rec in self._memories.items():
+            clean[mid] = {k: v for k, v in rec.items() if k != "embedding"}
+        data: dict[str, Any] = {"memories": clean, "version": 2}
         # Write atomically
         tmp = self._memories_path.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
@@ -340,8 +359,11 @@ class Mem0V3Store:
         tmp.replace(self._memories_path)
 
     def _save_entities(self) -> None:
-        """Persist entities to JSON."""
-        data: dict[str, Any] = {"entities": self._entities, "version": 1}
+        """Persist entities to JSON (embeddings live in EmbeddingStore, not JSON)."""
+        clean: dict[str, Any] = {}
+        for eid, erec in self._entities.items():
+            clean[eid] = {k: v for k, v in erec.items() if k != "embedding"}
+        data: dict[str, Any] = {"entities": clean, "version": 2}
         tmp = self._entities_path.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -392,13 +414,17 @@ class Mem0V3Store:
                 "text": text,
                 "hash": mem_hash,
                 "lemmatized": lemmatized,
-                "embedding": rec.get("embedding"),
                 "created_at": rec.get("created_at", now),
                 "updated_at": now,
                 "metadata": rec.get("metadata", {}),
             }
             self._memories[mem_id] = record
             self._bm25.add(mem_id, tokens)
+
+            # Store embedding in decoupled EmbeddingStore
+            emb = rec.get("embedding")
+            if emb and isinstance(emb, list) and len(emb) > 0:
+                self._mem_embeddings.add(mem_id, emb)
             inserted.append(mem_id)
 
         if inserted:
@@ -422,6 +448,7 @@ class Mem0V3Store:
             return False
         del self._memories[memory_id]
         self._bm25.remove(memory_id)
+        self._mem_embeddings.remove(memory_id)
         self._save_memories()
         return True
 
@@ -435,32 +462,30 @@ class Mem0V3Store:
         top_k: int = 60,
         threshold: float = 0.0,
     ) -> list[dict]:
-        """Cosine similarity search over stored embeddings."""
+        """Cosine similarity search via EmbeddingStore (numpy-accelerated)."""
         if not self._memories:
             return []
 
-        mem_ids: list[str] = []
-        embeddings: list[list[float]] = []
-        for mid, rec in self._memories.items():
-            emb = rec.get("embedding")
-            if emb and len(emb) > 0:
-                mem_ids.append(mid)
-                embeddings.append(emb)
-
-        if not embeddings:
+        mem_ids, emb_matrix = self._mem_embeddings.get_all_embeddings()
+        if len(mem_ids) == 0 or emb_matrix.shape[1] == 0:
             return []
 
-        scores = batch_cosine(query_embedding, embeddings)
+        q_emb = np.array(query_embedding, dtype=np.float32)
+        scores = batch_cosine_np(q_emb, emb_matrix)
+
         ranked = sorted(
             zip(mem_ids, scores), key=lambda x: x[1], reverse=True
         )
         results = []
         for mid, score in ranked:
-            if score < threshold:
+            score_f = float(score)
+            if score_f < threshold:
                 continue
             if len(results) >= top_k:
                 break
-            results.append({"id": mid, "score": score, "payload": deepcopy(self._memories[mid])})
+            rec = self._memories.get(mid)
+            if rec:
+                results.append({"id": mid, "score": score_f, "payload": deepcopy(rec)})
         return results
 
     # ------------------------------------------------------------------
@@ -494,22 +519,26 @@ class Mem0V3Store:
     ) -> str | None:
         """Upsert an entity, linking it to a memory.
 
-        If an entity with similar text already exists (cosine > threshold),
+        Uses EmbeddingStore for entity embedding comparison and storage.
+        If an entity with similar embedding already exists (cosine > threshold),
         append memory_id to its linked list. Otherwise create a new entity.
         """
         if embedding is None:
             embedding = []
 
-        # Try to match existing entity by semantic similarity
+        # Try to match existing entity by semantic similarity via EmbeddingStore
         best_id: str | None = None
         best_score = 0.0
-        for eid, erec in self._entities.items():
-            e_emb = erec.get("embedding", [])
-            if e_emb and embedding:
-                sim = cosine_similarity(embedding, e_emb)
-                if sim > self.entity_similarity_threshold and sim > best_score:
-                    best_score = sim
-                    best_id = eid
+        if embedding:
+            ent_ids, ent_emb_matrix = self._ent_embeddings.get_all_embeddings()
+            if len(ent_ids) > 0 and ent_emb_matrix.shape[1] > 0:
+                q_emb = np.array(embedding, dtype=np.float32)
+                ent_scores = batch_cosine_np(q_emb, ent_emb_matrix)
+                for eid, sim in zip(ent_ids, ent_scores):
+                    sim_f = float(sim)
+                    if sim_f > self.entity_similarity_threshold and sim_f > best_score:
+                        best_score = sim_f
+                        best_id = eid
 
         if best_id is not None:
             # Update existing entity
@@ -527,9 +556,10 @@ class Mem0V3Store:
             "text": entity_text,
             "type": entity_type,
             "linked_memory_ids": [memory_id],
-            "embedding": embedding,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        if embedding:
+            self._ent_embeddings.add(eid, embedding)
         self._save_entities()
         return eid
 
@@ -539,37 +569,33 @@ class Mem0V3Store:
         top_k: int = 500,
         threshold: float = 0.5,
     ) -> list[dict]:
-        """Search entity store by embedding similarity."""
+        """Search entity store by embedding similarity via EmbeddingStore."""
         if not self._entities:
             return []
 
-        eids: list[str] = []
-        embeddings: list[list[float]] = []
-        for eid, erec in self._entities.items():
-            emb = erec.get("embedding", [])
-            if emb:
-                eids.append(eid)
-                embeddings.append(emb)
-
-        if not embeddings:
+        eids, emb_matrix = self._ent_embeddings.get_all_embeddings()
+        if len(eids) == 0 or emb_matrix.shape[1] == 0:
             return []
 
-        scores = batch_cosine(query_embedding, embeddings)
+        q_emb = np.array(query_embedding, dtype=np.float32)
+        scores = batch_cosine_np(q_emb, emb_matrix)
         ranked = sorted(zip(eids, scores), key=lambda x: x[1], reverse=True)
 
         results = []
         for eid, score in ranked:
-            if score < threshold:
+            score_f = float(score)
+            if score_f < threshold:
                 continue
             if len(results) >= top_k:
                 break
-            erec = self._entities[eid]
-            results.append({
-                "id": eid,
-                "score": score,
-                "payload": deepcopy(erec),
-                "linked_memory_ids": erec.get("linked_memory_ids", []),
-            })
+            erec = self._entities.get(eid)
+            if erec:
+                results.append({
+                    "id": eid,
+                    "score": score_f,
+                    "payload": deepcopy(erec),
+                    "linked_memory_ids": erec.get("linked_memory_ids", []),
+                })
         return results
 
     # ------------------------------------------------------------------
@@ -639,4 +665,6 @@ class Mem0V3Store:
             "memories": self.memory_count,
             "entities": self.entity_count,
             "bm25_docs": self._bm25._doc_count,
+            "memory_embeddings": self._mem_embeddings.get_embedding_count(),
+            "entity_embeddings": self._ent_embeddings.get_embedding_count(),
         }

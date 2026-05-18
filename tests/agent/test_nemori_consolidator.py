@@ -319,3 +319,105 @@ class TestNemoriConsolidatorDrain:
         consolidator._tasks.add(task)
         await consolidator.drain(timeout=5)
         assert store.count_unprocessed() == 0
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# maybe_consolidate_by_tokens
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestNemoriConsolidatorMaybeConsolidateByTokens:
+    """maybe_consolidate_by_tokens() — token-budget consolidation entry point."""
+
+    @pytest.mark.asyncio
+    async def test_maybe_consolidate_triggers_when_above_threshold(
+        self, consolidator, store, mock_episode_gen,
+    ):
+        """When unprocessed messages >= buffer_size_min, processing is triggered."""
+        mock_episode_gen.generate.return_value = Episode(
+            user_id="u1", title="T", content="C", source_messages=[],
+        )
+        # Add messages to store
+        msgs = [
+            Message(role="user", content="a"),
+            Message(role="user", content="b"),
+        ]
+        store.push_messages(msgs)
+
+        # Create mock session
+        session = MagicMock()
+        session.user_id = "u1"
+        session.agent_id = "default"
+
+        # Call maybe_consolidate_by_tokens
+        await consolidator.maybe_consolidate_by_tokens(session)
+
+        # Wait for background processing
+        await consolidator.drain(timeout=5)
+
+        # Messages should be processed
+        assert store.count_unprocessed() == 0
+
+    @pytest.mark.asyncio
+    async def test_maybe_consolidate_idle_when_below_threshold(
+        self, consolidator, store,
+    ):
+        """When unprocessed messages < buffer_size_min, no processing occurs."""
+        # Add only 1 message (below buffer_size_min=2)
+        msgs = [Message(role="user", content="hello")]
+        store.push_messages(msgs)
+
+        # Create mock session
+        session = MagicMock()
+        session.user_id = "u1"
+        session.agent_id = "default"
+
+        # Call maybe_consolidate_by_tokens
+        await consolidator.maybe_consolidate_by_tokens(session)
+
+        # Give some time for any potential background tasks
+        await asyncio.sleep(0.1)
+        await consolidator.drain(timeout=2)
+
+        # Message should still be unprocessed
+        assert store.count_unprocessed() == 1
+
+    @pytest.mark.asyncio
+    async def test_maybe_consolidate_uses_default_ids(self, consolidator, store, mock_episode_gen):
+        """When session lacks user_id/agent_id, defaults are used."""
+        mock_episode_gen.generate.return_value = Episode(
+            user_id="default", title="T", content="C", source_messages=[],
+        )
+        msgs = [
+            Message(role="user", content="a"),
+            Message(role="user", content="b"),
+        ]
+        store.push_messages(msgs)
+
+        # Session without user_id/agent_id attributes
+        session = MagicMock(spec=[])
+
+        await consolidator.maybe_consolidate_by_tokens(session)
+        await consolidator.drain(timeout=5)
+
+        assert store.count_unprocessed() == 0
+
+    @pytest.mark.asyncio
+    async def test_maybe_consolidate_error_handling(
+        self, consolidator, store, mock_episode_gen,
+    ):
+        """Errors in background processing should not propagate."""
+        mock_episode_gen.generate.side_effect = RuntimeError("test error")
+        msgs = [
+            Message(role="user", content="a"),
+            Message(role="user", content="b"),
+        ]
+        store.push_messages(msgs)
+
+        session = MagicMock()
+        session.user_id = "u1"
+        session.agent_id = "default"
+
+        # Should not raise
+        await consolidator.maybe_consolidate_by_tokens(session)
+        await consolidator.drain(timeout=5)

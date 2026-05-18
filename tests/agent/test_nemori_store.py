@@ -391,7 +391,7 @@ class TestNemoriStoreResilience:
 
     def test_buffer_handles_malformed_lines(self, store):
         """Malformed JSONL lines should be silently skipped in buffer reads."""
-        buffer_file = store._workspace / "memory" / "nemori" / "message_buffer.jsonl"
+        buffer_file = store.memory_dir / "message_buffer.jsonl"
         buffer_file.write_text(
             "not json\n"
             + json.dumps({

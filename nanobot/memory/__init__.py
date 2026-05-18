@@ -20,6 +20,7 @@ Usage::
 """
 
 from nanobot.memory.base import MemoryAlgorithm, MemoryComponents
+from nanobot.memory.embedding_store import EmbeddingStore, batch_cosine_np  # noqa: F401
 from nanobot.memory.naive_memory.auto_compact import AutoCompact
 from nanobot.memory.naive_memory.consolidator import Consolidator
 from nanobot.memory.naive_memory.dream import Dream
@@ -38,23 +39,6 @@ from nanobot.memory.layerga_memory.consolidator import LayergaConsolidator  # no
 from nanobot.memory.layerga_memory.dream import LayergaDream  # noqa: F401
 from nanobot.memory.layerga_memory.store import LayergaStore  # noqa: F401
 
-# Optional ReMe memory algorithm — requires `pip install nanobot-ai[reme]`
-# If PyPI does not yet host >=0.3.1.9, install from source:
-#   git clone https://github.com/agentscope-ai/ReMe.git && cd ReMe && pip install -e ".[light]"
-try:
-    import reme  # noqa: F401  # verify the external reme package is installed
-
-    # Only import the adapter subpackage when reme is actually available
-    from nanobot.memory.remem_memory import ReMeMemoryAlgorithm  # noqa: F401
-    from nanobot.memory.remem_memory.auto_compact import ReMeAutoCompact  # noqa: F401
-    from nanobot.memory.remem_memory.consolidator import ReMeConsolidator  # noqa: F401
-    from nanobot.memory.remem_memory.dream import ReMeDream  # noqa: F401
-    from nanobot.memory.remem_memory.store import ReMeStore  # noqa: F401
-
-    _HAS_REME = True
-except ImportError:
-    _HAS_REME = False
-
 # Mem0V3 memory algorithm — zero external dependencies, pure Python implementation.
 from nanobot.memory.mem0v3_memory import Mem0V3MemoryAlgorithm  # noqa: F401
 from nanobot.memory.mem0v3_memory.store import Mem0V3Store  # noqa: F401
@@ -69,6 +53,9 @@ from nanobot.memory.supermemory_memory.store import SupermemoryStore  # noqa: F4
 from nanobot.memory.supermemory_memory.consolidator import SupermemoryConsolidator  # noqa: F401
 from nanobot.memory.supermemory_memory.dream import SupermemoryDream  # noqa: F401
 from nanobot.memory.supermemory_memory.auto_compact import SupermemoryAutoCompact  # noqa: F401
+
+# REME memory algorithm — removed (see task: remem_memory算法全量下线)
+_HAS_REME = False
 
 # Optional EMem memory algorithm — requires `pip install nanobot-ai[emem]`
 try:
@@ -101,6 +88,8 @@ __all__ = [
     "AutoCompact",
     "Consolidator",
     "Dream",
+    "EmbeddingStore",
+    "batch_cosine_np",
     "HindsightAutoCompact",
     "HindsightConsolidator",
     "HindsightDream",
@@ -135,15 +124,6 @@ __all__ = [
     "MastraOMDream",
     "MastraOMAutoCompact",
 ]
-
-if _HAS_REME:
-    __all__.extend([
-        "ReMeAutoCompact",
-        "ReMeConsolidator",
-        "ReMeDream",
-        "ReMeMemoryAlgorithm",
-        "ReMeStore",
-    ])
 
 if _HAS_EMEM:
     __all__.extend([

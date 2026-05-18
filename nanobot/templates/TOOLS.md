@@ -31,6 +31,17 @@ This file documents non-obvious constraints and usage patterns.
 - Prefer this over `exec` for code and history searches
 - Binary or oversized files may be skipped to keep results readable
 
+## write_file — File Organization (CRITICAL)
+
+- **NEVER create files directly in workspace root** (except AGENTS.md, SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md)
+- **ALWAYS use `outputs/<project-name>/` for user work products**
+  - Example: `outputs/f1-grand-prix/index.html`
+  - Example: `outputs/raiden4/scripts/game.js`
+  - Example: `outputs/reports/analysis.md`
+- The `write_file` tool enforces this — non-system files in workspace root will be **rejected**
+- Each write to `outputs/` is automatically recorded in `outputs/meta.json` with timestamp and source context
+- This keeps the workspace organized and prevents clutter
+
 ## cron — Scheduled Reminders
 
 - Please refer to cron skill for usage.

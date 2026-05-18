@@ -14,6 +14,28 @@ from nanobot.utils.helpers import build_image_content_blocks, detect_image_mime
 from nanobot.config.paths import get_media_dir
 
 
+# ---------------------------------------------------------------------------
+# workspace root whitelists — files/dirs allowed at workspace root level
+# ---------------------------------------------------------------------------
+
+_ALLOWED_ROOT_FILES = frozenset({
+    "AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md",
+})
+
+_ALLOWED_ROOT_DIRS = frozenset({
+    "memory", "skills", "outputs",
+})
+
+
+def _is_workspace_root_file(path: Path, workspace: Path) -> bool:
+    """True if *path* lives directly under *workspace* (no sub-directory)."""
+    try:
+        rel = path.resolve().relative_to(workspace.resolve())
+        return len(rel.parts) == 1
+    except ValueError:
+        return False
+
+
 def _resolve_path(
     path: str,
     workspace: Path | None = None,
@@ -312,13 +334,59 @@ class ReadFileTool(_FsTool):
 
 @tool_parameters(
     tool_parameters_schema(
-        path=StringSchema("The file path to write to"),
+        path=StringSchema("The file path to write to (must be under outputs/<project>/ for project files)"),
         content=StringSchema("The content to write"),
         required=["path", "content"],
     )
 )
 class WriteFileTool(_FsTool):
-    """Write content to a file."""
+    """Write content to a file. Non-system files MUST go under outputs/<project>/."""
+
+    # ------------------------------------------------------------------
+    # path validation helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_output_path(fp: Path, workspace: Path | None) -> str | None:
+        """Return an error string if *fp* violates workspace root rules, or None.
+
+        A path is *rejected* when:
+        - It resolves to the workspace root level *and* is not a known
+          system file or inside a known system directory.
+        """
+        if workspace is None:
+            return None
+        try:
+            rel = fp.resolve().relative_to(workspace.resolve())
+        except ValueError:
+            return None  # outside workspace — handled by PermissionError later
+
+        parts = rel.parts
+        if not parts:
+            return None
+        # Top-level file: must be in whitelist
+        if len(parts) == 1:
+            if parts[0] not in _ALLOWED_ROOT_FILES:
+                return (
+                    f"Cannot create '{parts[0]}' directly in workspace root. "
+                    f"Project output files MUST be placed under "
+                    f"'outputs/<project-name>/{parts[0]}'. "
+                    f"Example: outputs/my-project/{parts[0]}"
+                )
+            return None
+        # Top-level directory: must be in whitelist
+        top_dir = parts[0]
+        if top_dir not in _ALLOWED_ROOT_DIRS:
+            return (
+                f"Cannot create files under '{top_dir}/' — not a workspace-managed directory. "
+                f"Allowed top-level directories: {', '.join(sorted(_ALLOWED_ROOT_DIRS))}. "
+                f"Use 'outputs/<project-name>/' for project files."
+            )
+        return None
+
+    # ------------------------------------------------------------------
+    # Tool interface
+    # ------------------------------------------------------------------
 
     @property
     def name(self) -> str:
@@ -329,8 +397,25 @@ class WriteFileTool(_FsTool):
         return (
             "Write content to a file. Overwrites if the file already exists; "
             "creates parent directories as needed. "
-            "For partial edits, prefer edit_file instead."
+            "For partial edits, prefer edit_file instead. "
+            "CRITICAL: Non-system project files MUST be placed under "
+            "outputs/<project-name>/. Files directly in workspace root "
+            "will be rejected unless they are system files "
+            "(AGENTS.md, SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md)."
         )
+
+    # Context wiring — called by AgentLoop._set_tool_context before each turn
+    _channel: str | None = None
+    _chat_id: str | None = None
+    _session_key: str | None = None
+
+    def set_context(
+        self, channel: str, chat_id: str, session_key: str | None = None
+    ) -> None:
+        """Store current session context for meta.json recording."""
+        self._channel = channel
+        self._chat_id = chat_id
+        self._session_key = session_key
 
     async def execute(self, path: str | None = None, content: str | None = None, **kwargs: Any) -> str:
         try:
@@ -339,9 +424,34 @@ class WriteFileTool(_FsTool):
             if content is None:
                 raise ValueError("Unknown content")
             fp = self._resolve(path)
+
+            # --- outputs/ root guard ----------------------------------------
+            err = self._validate_output_path(fp, self._workspace)
+            if err:
+                return f"Error: {err}"
+
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
             file_state.record_write(fp)
+
+            # --- meta.json recording (only for outputs/ files) ---------------
+            if self._workspace:
+                try:
+                    rel_str = str(fp.resolve().relative_to(self._workspace.resolve()))
+                    if rel_str.startswith("outputs" + os.sep):
+                        from nanobot.utils.outputs_meta import OutputMetaManager
+
+                        mgr = OutputMetaManager(self._workspace)
+                        mgr.record_entry(
+                            relative_path=rel_str,
+                            channel=self._channel,
+                            chat_id=self._chat_id,
+                            session_key=self._session_key,
+                            size_bytes=len(content),
+                        )
+                except Exception:
+                    pass  # meta recording is best-effort
+
             return f"Successfully wrote {len(content)} characters to {fp}"
         except PermissionError as e:
             return f"Error: {e}"

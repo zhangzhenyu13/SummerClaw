@@ -13,7 +13,7 @@ UnionClaw inherits nanobot's layered memory design and extends it with a **plugg
 ```
    ┌──────────────────────────────────────────────────┐
    │              MemoryRegistry                       │
-   │  naive_memory | layerga_memory | emem_memory | nemori_memory | remem_memory | mem0v3_memory | supermemory_memory | hindsight_memory | mastra_om_memory | ... │
+   │  naive_memory | layerga_memory | emem_memory | nemori_memory | mem0v3_memory | supermemory_memory | hindsight_memory | mastra_om_memory | ... │
    └──────────────┬───────────────────────────────────┘
                   │ build(workspace, provider, ...)
                   ▼
@@ -276,31 +276,7 @@ Based on [nemori](https://github.com/nemori-ai/nemori), this algorithm implement
 
 ---
 
-### 5. `remem_memory` — ReMeLight-Backed Memory
-
-Adapter wrapping [ReMeLight](https://github.com/nousresearch/reme) for semantic memory search, automatic compaction, and long-term summarisation.
-
-**Key features:**
-- ReMeLight handles internal storage (dialog files, semantic index)
-- Nanobot companion JSONL for cursor-based Dream/Consolidator compatibility
-- Git-tracked MEMORY.md for interop with other algorithms
-
-**Storage Structure:**
-
-```
-{workspace}/
-├── MEMORY.md                   # Long-term memory (managed by ReMeLight + Dream)
-└── memory/
-    ├── remem_history.jsonl     # Companion history (JSONL) for cursor tracking
-    ├── .remem_cursor           # Cursor counter
-    └── .remem_dream_cursor     # Dream cursor
-```
-
-ReMeLight manages its own internal directory under `{workspace}` (dialog files, index files). The `remem_history.jsonl` file is a nanobot-side adapter that ensures cursor-based pipelines work unchanged.
-
----
-
-### 6. `mem0v3_memory` — Token-Efficient ADD-Only Memory
+### 5. `mem0v3_memory` — Token-Efficient ADD-Only Memory
 
 Based on the [mem0 v3](https://mem0.ai/blog/mem0-the-token-efficient-memory-algorithm) algorithm (April 2026), completely rewritten for nanobot with zero external dependencies.
 
@@ -344,7 +320,7 @@ Phase 7: Save messages to SQLite MessageLog
 
 ---
 
-### 7. `supermemory_memory` — Chunk-Based Memory with Relational Versioning
+### 6. `supermemory_memory` — Chunk-Based Memory with Relational Versioning
 
 Based on [Supermemory Research](https://supermemory.ai/research/) architecture — achieves 85.2% SOTA on LongMemEval with gemini-3-pro. Fully local implementation with zero external API dependencies.
 
@@ -393,7 +369,7 @@ Based on [Supermemory Research](https://supermemory.ai/research/) architecture �
 
 ---
 
-### 8. `hindsight_memory` — Built-in Local TEMPR Multi-Strategy Engine
+### 7. `hindsight_memory` — Built-in Local TEMPR Multi-Strategy Engine
 
 Built-in local TEMPR (Temporal + Embedding + Metadata + Probabilistic + Relational) multi-strategy retrieval engine on top of naive file-based storage. Zero external dependencies — no server, no `hindsight_client` package needed.
 
@@ -510,7 +486,7 @@ has_hindsight? (always True)
 
 ---
 
-### 9. `mastra_om_memory` — Observational Memory (Observer/Reflector Pipeline)
+### 8. `mastra_om_memory` — Observational Memory (Observer/Reflector Pipeline)
 
 Based on [Mastra Observational Memory](https://mastra.ai/research/observational-memory) architecture — achieves **94.87%** SOTA on LongMemEval with gpt-5-mini. Zero external dependencies.
 
@@ -575,7 +551,6 @@ Continue with dark mode implementation
 | **emem_memory** | EDU / Argument / Session Store | Pickle + Parquet | ✅ | `igraph`, `sentence-transformers` | Structured fact extraction, entity tracking |
 | **layerga_memory** | L0-L4 layered (constitution + insight + facts + SOP + archives) | Markdown + TXT + MD | ❌ | None | Self-organising hierarchical knowledge, zero-dependency |
 | **nemori_memory** | Episode + SemanticMemory | JSON + JSONL | ✅ (file or PG+Qdrant) | None (file), `asyncpg`+`qdrant_client` (PG) | Self-organising long-term knowledge |
-| **remem_memory** | ReMeLight + companion JSONL | ReMeLight + JSONL | ✅ | `reme-ai` | External memory engine integration |
 | **mem0v3_memory** | Vector memories + Entity index + BM25 + SQLite | JSON + SQLite | ✅ | None | Token-efficient LLM-native extraction, entity-aware retrieval |
 | **supermemory_memory** | Memory graph + Source chunks + MEMORY.md | JSON + JSONL + MD | ✅ (optional) | None | SOTA agent memory with version chains, static/dynamic profiling, auto-forgetting, embedding-based relationship detection |
 | **hindsight_memory** | Naive files + local TEMPR bank (JSON) | Markdown + JSONL + JSON | ✅ (local) | None | Built-in local multi-strategy retrieval with RRF fusion, fact types & graph expansion |
@@ -662,7 +637,7 @@ That turns memory from a silent mutation into an auditable process.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `memoryAlgorithm` | string | `"naive_memory"` | Registered algorithm name: `naive_memory`, `layerga_memory`, `emem_memory`, `nemori_memory`, `remem_memory`, `mem0v3_memory`, `supermemory_memory`, `hindsight_memory`, or `mastra_om_memory` |
+| `memoryAlgorithm` | string | `"naive_memory"` | Registered algorithm name: `naive_memory`, `layerga_memory`, `emem_memory`, `nemori_memory`, `mem0v3_memory`, `supermemory_memory`, `hindsight_memory`, or `mastra_om_memory` |
 
 ### Dream Configuration
 

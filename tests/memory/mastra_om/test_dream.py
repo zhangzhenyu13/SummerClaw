@@ -263,7 +263,7 @@ class TestDreamRun:
         call_args = mock_provider.chat_with_retry.call_args
         messages = call_args.kwargs.get("messages", call_args[1].get("messages"))
         user_msg = messages[1]["content"] if len(messages) > 1 else messages[0]["content"]
-        assert "## Current OBSERVATIONS.md" in user_msg
+        assert "Past Conversation Records" in user_msg
         assert "Test observation" in user_msg
 
     async def test_includes_existing_skills_when_present(self, dream, mock_provider, mock_runner, store):

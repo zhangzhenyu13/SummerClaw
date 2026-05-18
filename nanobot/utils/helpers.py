@@ -468,6 +468,16 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
     _write(None, workspace / "memory" / "history.jsonl")
     (workspace / "skills").mkdir(exist_ok=True)
 
+    # Create outputs directory for project files
+    outputs_dir = workspace / "outputs"
+    if not outputs_dir.exists():
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        added.append("outputs/")
+
+    # Initialize outputs meta.json
+    from nanobot.utils.outputs_meta import OutputMetaManager
+    OutputMetaManager(workspace)  # bootstrap creates outputs/ + meta.json if needed
+
     if added and not silent:
         from rich.console import Console
         for name in added:

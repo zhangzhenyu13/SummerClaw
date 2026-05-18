@@ -281,7 +281,11 @@ class MastraOMConsolidator:
         self,
         messages: list[dict],
     ) -> str | None:
-        """Observe messages, append observations to the observation log.
+        """Observe messages, store raw to history and observations to OBSERVATIONS.md.
+
+        Raw messages → history.jsonl (for Dream analysis).
+        Observer output → OBSERVATIONS.md.
+        OM summary → om-ops.jsonl (for pipeline debugging).
 
         Returns the new observations text, or None if nothing was observed.
         """
@@ -289,6 +293,11 @@ class MastraOMConsolidator:
             return None
 
         try:
+            # Always write raw messages to history.jsonl for Dream analysis
+            self.store.append_history(
+                self.store._format_messages(messages)
+            )
+
             existing = self.store.read_observations()
             result = await self._observe_messages(messages, existing)
 
@@ -313,12 +322,12 @@ class MastraOMConsolidator:
             # Append to observation log
             self.store.append_observations(observations_text)
 
-            # Also append a summary to history.jsonl for Dream compatibility
+            # Write OM operation summary to om-ops.jsonl (not history anymore)
             summary = (
                 f"[OM-OBSERVED] {len(messages)} messages → "
                 f"{len(observations_text)} chars of observations"
             )
-            self.store.append_history(summary)
+            self.store.append_om_ops(summary)
 
             logger.info(
                 "Observer: {} messages → {} chars of observations",
@@ -459,12 +468,18 @@ class MastraOMConsolidator:
                 session.key, estimated, self.context_window_tokens, source,
             )
             # First, activate any buffered observations
-            await activate_buffered_observations(
+            buffered_obs = await activate_buffered_observations(
                 buffer_coordinator=self._buffer_coordinator,
                 lock_key=lock_key,
                 buffering_store=self._buffering_store,
                 consolidator=self,
             )
+            # Inject buffered observations into session so downstream
+            # consumers (SkillAutogen, etc.) can read them transparently.
+            if buffered_obs:
+                obs_records = self.store._observations_as_records(buffered_obs)
+                if obs_records:
+                    session.add_message("system", f"[Memory]\n{obs_records}")
 
             for round_num in range(self._MAX_CONSOLIDATION_ROUNDS):
                 if estimated <= target:
@@ -500,8 +515,16 @@ class MastraOMConsolidator:
                 )
 
                 # Observe the message chunk
-                if not await self.observe_and_store(chunk):
+                observations_text = await self.observe_and_store(chunk)
+                if not observations_text:
                     return
+
+                # Inject observations as session messages so downstream
+                # consumers (SkillAutogen, etc.) can read them transparently
+                # without knowing about Observer internals.
+                obs_records = self.store._observations_as_records(observations_text)
+                if obs_records:
+                    session.add_message("system", f"[Memory]\n{obs_records}")
 
                 session.last_consolidated = end_idx
                 self.sessions.save(session)
@@ -528,8 +551,9 @@ class MastraOMConsolidator:
         """Extract facts from recent conversation for Hermes-Autogen.
 
         Called by SkillAutogen to capture facts before skill generation.
-        Uses the Observer to extract observations, then returns them as
-        a list of fact strings.
+        Uses the Observer to extract observations, stores raw messages to
+        history.jsonl and observations to OBSERVATIONS.md, then returns
+        facts as a list of strings.
 
         Returns:
             List of extracted fact strings.
@@ -540,19 +564,36 @@ class MastraOMConsolidator:
         logger.info("[OM:extract] extracting facts from {} messages", len(messages))
 
         try:
+            # Write raw messages to history.jsonl for Dream analysis
+            self.store.append_history(
+                self.store._format_messages(messages)
+            )
+
             result = await self._observe_messages(messages, existing_observations="")
 
             if not result or result.get("degenerate"):
                 logger.debug("[OM:extract] observer returned degenerate/empty result")
+                self.store.append_om_ops(
+                    f"[OM-EXTRACT-DEGENERATE] {len(messages)} messages, observer returned empty"
+                )
                 return []
 
             observations_text = result.get("observations", "")
             if not observations_text.strip():
                 logger.debug("[OM:extract] no observations extracted")
+                self.store.append_om_ops(
+                    f"[OM-EXTRACT-EMPTY] {len(messages)} messages, no observations extracted"
+                )
                 return []
 
             # Store the observations
             self.store.append_observations(observations_text)
+
+            # Write OM operation summary to om-ops.jsonl
+            self.store.append_om_ops(
+                f"[OM-EXTRACT] {len(messages)} messages → "
+                f"{len(observations_text)} chars of observations"
+            )
 
             # Extract individual facts (lines starting with *)
             facts = [

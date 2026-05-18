@@ -292,19 +292,6 @@ class AgentLoop:
         from nanobot.memory.hindsight_memory import HindsightMemoryAlgorithm
         from nanobot.memory.mastra_om_memory import MastraOMMemoryAlgorithm
 
-        _REME_INSTALL_MSG = (
-            "ReMe memory algorithm 'remem_memory' is configured but the 'reme' "
-            "package is not installed.\n"
-            "Install via:  git clone https://github.com/agentscope-ai/ReMe.git\n"
-            "              cd ReMe && pip install -e \".[light]\"\n"
-            "Falling back to 'naive_memory'."
-        )
-
-        _original_algorithm_name = memory_algorithm_name
-        if memory_algorithm_name == "remem_memory" and not _HAS_REME:
-            logger.warning(_REME_INSTALL_MSG)
-            memory_algorithm_name = "naive_memory"
-
         self.memory_algorithm_name = memory_algorithm_name
 
         _mem_registry = MemoryRegistry()
@@ -315,10 +302,6 @@ class AgentLoop:
         _mem_registry.register(SupermemoryMemoryAlgorithm())
         _mem_registry.register(HindsightMemoryAlgorithm())
         _mem_registry.register(MastraOMMemoryAlgorithm())
-        if _HAS_REME:
-            from nanobot.memory.remem_memory import ReMeMemoryAlgorithm
-
-            _mem_registry.register(ReMeMemoryAlgorithm())
         if _HAS_EMEM:
             from nanobot.memory.emem_memory import EMemMemoryAlgorithm
 
@@ -581,10 +564,16 @@ class AgentLoop:
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("message", "spawn", "cron", "my", "ask_user"):
+        session_key = f"{channel}:{chat_id}"
+        for name in ("message", "spawn", "cron", "my", "ask_user", "write_file"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
-                    tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+                    if name == "message":
+                        tool.set_context(channel, chat_id, *([message_id] if message_id else []))
+                    elif name == "write_file":
+                        tool.set_context(channel, chat_id, session_key=session_key)
+                    else:
+                        tool.set_context(channel, chat_id)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:

@@ -328,8 +328,9 @@ async def async_buffer_observe(
     """Launch an async buffered observation in the background.
 
     This is a fire-and-forget operation: it calls the Observer on the given
-    messages and stores the result as a buffered chunk. It does NOT modify
-    the active observation log until activation.
+    messages, stores the result as a buffered chunk, and writes raw messages
+    to history.jsonl for Dream analysis. It does NOT modify the active
+    observation log until activation.
 
     Args:
         consolidator: The Consolidator instance to use for Observer calls.
@@ -357,6 +358,11 @@ async def async_buffer_observe(
     )
 
     try:
+        # Write raw messages to history.jsonl for Dream analysis
+        consolidator.store.append_history(
+            consolidator.store._format_messages(messages)
+        )
+
         result = await consolidator._observe_messages(
             messages=messages,
             existing_observations="",
@@ -364,6 +370,9 @@ async def async_buffer_observe(
 
         if not result or result.get("degenerate") or not result.get("observations", "").strip():
             logger.debug("[OM:buffer] async buffer returned empty/degenerate, skipping")
+            consolidator.store.append_om_ops(
+                f"[OM-BUFFER-DEGENERATE] {len(messages)} messages, observer returned empty"
+            )
             future.set_result(None)
             return
 
@@ -459,7 +468,7 @@ async def activate_buffered_observations(
 
     # Append to observation log
     consolidator.store.append_observations(combined)
-    consolidator.store.append_history(
+    consolidator.store.append_om_ops(
         f"[OM-BUFFER-ACTIVATED] {len(chunks)} buffered chunks → "
         f"{len(combined)} chars of observations"
     )

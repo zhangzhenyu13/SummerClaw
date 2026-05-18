@@ -159,9 +159,12 @@ Date: May 9
         assert "dark mode" in result
         obs = store.read_observations()
         assert "dark mode" in obs
-        # Check history summary was appended
+        # Check raw messages stored in history
         entries = store.read_unprocessed_history(since_cursor=0)
-        assert any("[OM-OBSERVED]" in e["content"] for e in entries)
+        assert any("dark mode" in e["content"] for e in entries)
+        # Check OM summary stored in om-ops
+        om_ops = store.read_om_ops()
+        assert any("[OM-OBSERVED]" in e["content"] for e in om_ops)
 
 
 # ------------------------------------------------------------------
