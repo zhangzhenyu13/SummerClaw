@@ -156,7 +156,7 @@ SummerClaw can connect to various platforms to interact with users across differ
 
 ## ⚙️ Configuration
 
-Copy `config.json.example` to `~/.summerclaw/config.json` and edit as needed.
+Copy `config.example.json` to `~/.summerclaw/config.json` and edit as needed.
 All keys below live under `agents.defaults` unless noted otherwise.
 
 ### Core Settings

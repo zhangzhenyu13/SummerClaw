@@ -125,6 +125,22 @@ class InjectionConfig(Base):
     )
 
 
+class RoleSelectorConfig(Base):
+    """Role selector configuration.
+
+    When enabled, automatically selects roles from resources/roles based on
+    requirements document and copies them to workspace/roles/selected/.
+    """
+
+    enabled: bool = False  # Enable automatic role selection
+    requirements: str = "roles/requirements.md"  # Path to requirements file (relative to workspace)
+    count: int = Field(default=5, ge=1, le=50)  # Number of roles to select
+    model_override: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("modelOverride", "model", "model_override"),
+    )  # Optional model override for role selection
+
+
 class EmbeddingConfig(Base):
     """Embedding model configuration.
 
@@ -207,6 +223,9 @@ class AgentDefaults(Base):
     injection: InjectionConfig = Field(
         default_factory=InjectionConfig
     )  # Mid-turn message injection control
+    role_selector: RoleSelectorConfig = Field(
+        default_factory=RoleSelectorConfig
+    )  # Role selector: auto-select roles from resources/roles
 
 
 class AgentsConfig(Base):

@@ -1492,6 +1492,75 @@ def status():
 
 
 # ============================================================================
+# Role Selector Commands
+# ============================================================================
+
+roles_app = typer.Typer(help="Manage roles")
+app.add_typer(roles_app, name="roles")
+
+
+@roles_app.command("select")
+def roles_select(
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    model: str | None = typer.Option(None, "--model", "-m", help="Override model name"),
+):
+    """Select roles from resources/roles based on configuration requirements."""
+    from pathlib import Path as PathLib
+
+    from summerclaw.agent.role_selector import select_roles_sync
+
+    runtime_config = _load_runtime_config(config, workspace)
+    workspace_path = runtime_config.workspace_path
+
+    console.print(f"{__logo__} Role Selector\n")
+
+    # 检查是否启用
+    role_selector_cfg = runtime_config.agents.defaults.role_selector
+    if not role_selector_cfg.enabled:
+        console.print("[yellow]Role selector is not enabled in config.[/yellow]")
+        console.print("Enable it by setting `role_selector.enabled = true` in your config.")
+        raise typer.Exit(1)
+
+    # 解析需求文件路径
+    from pathlib import Path as PathLib
+    req_path = PathLib(role_selector_cfg.requirements)
+    if not req_path.is_absolute():
+        req_path = workspace_path / req_path
+
+    console.print(f"Workspace: {workspace_path}")
+    console.print(f"Requirements file: {req_path}")
+    console.print(f"Count: {role_selector_cfg.count}")
+    console.print()
+
+    try:
+        success = select_roles_sync(
+            config=runtime_config,
+            workspace_path=workspace_path,
+            model_override=model,
+        )
+
+        if success:
+            selected_dir = workspace_path / "roles" / "selected"
+            md_files = list(selected_dir.glob("*.md"))
+            console.print(f"[green]✓[/green] 角色选择完成: {len(md_files)} 个角色已选中")
+            console.print(f"  位置: {selected_dir}")
+        else:
+            selected_dir = workspace_path / "roles" / "selected"
+            if selected_dir.exists() and list(selected_dir.glob("*.md")):
+                md_files = list(selected_dir.glob("*.md"))
+                console.print(f"[yellow]⚠ 角色已存在 ({len(md_files)} 个)，跳过选择[/yellow]")
+                console.print(f"  位置: {selected_dir}")
+                console.print(f"[dim]如需重新选择，请删除 {selected_dir} 后重试[/dim]")
+            else:
+                console.print("[yellow]⚠ 角色选择未执行或失败[/yellow]")
+                console.print("  请检查日志获取详细信息")
+    except Exception as e:
+        console.print(f"[red]✗[/red] Role selection failed: {e}")
+        raise typer.Exit(1)
+
+
+# ============================================================================
 # OAuth Login
 # ============================================================================
 

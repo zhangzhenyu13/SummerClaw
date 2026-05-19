@@ -1,6 +1,7 @@
 # SummerClaw
 
-SummerClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), with the following key features:
+Earlier versions of SummerClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot). 
+Currently, SummerClaw is prime with the following key features:
 
 - **Browser-Enhanced Planning** — Plans on any task even with a relatively weak model by leveraging real-time web search.
 - **DAG-Based Subagent Pools** — Directed Acyclic Graph scheduling with configurable recursion depths.
@@ -55,7 +56,7 @@ SummerClaw is developed based on [Nanobot](https://github.com/HKUDS/nanobot), wi
 2. Copy the example config:
   Configure your models and apis, then
    ```bash
-   cp config.json.example ~/.summerclaw/config.json
+   cp config.example.json ~/.summerclaw/config.json
    ```
 3. Start the gateway:
    ```bash
@@ -166,7 +167,7 @@ Watches tool-call history and distills recurring patterns into reusable skills p
 
 ## Key Configuration
 
-Copy `config.json.example` to `~/.summerclaw/config.json` and edit as needed.
+Copy `config.example.json` to `~/.summerclaw/config.json` and edit as needed.
 All keys below live under `agents.defaults` unless noted otherwise.
 
 ### Plan-and-Solve + DAG Subagents
