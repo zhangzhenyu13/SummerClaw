@@ -22,6 +22,12 @@ class ContextBuilder:
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
     _MAX_RECENT_HISTORY = 50
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
+    # Byte cap for the "# Recent History" section injected into the system
+    # prompt.  Raw history entries (from Observer-formatted chunks in
+    # history.jsonl) can contain thousands of characters of tool-call logs
+    # and conversation dumps.  Without a byte cap, 50 entries of verbose
+    # history can easily exceed multiple MB and blow past API input limits.
+    _MAX_RECENT_HISTORY_BYTES = 30_000
 
     def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None, memory_store: Any | None = None):
         self.workspace = workspace
@@ -57,10 +63,29 @@ class ContextBuilder:
 
         entries = self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())
         if entries:
-            capped = entries[-self._MAX_RECENT_HISTORY:]
-            parts.append("# Recent History\n\n" + "\n".join(
-                f"- [{e['timestamp']}] {e['content']}" for e in capped
-            ))
+            # Build from newest to oldest; stop when byte budget is exhausted.
+            header = "# Recent History"
+            budget = self._MAX_RECENT_HISTORY_BYTES - len(header.encode("utf-8")) - 4  # 4 = "\n\n" + safety
+            history_lines: list[str] = []
+            for e in reversed(entries):
+                line = f"- [{e['timestamp']}] {e['content']}"
+                line_bytes = len(line.encode("utf-8"))
+                if budget - line_bytes < 0:
+                    break
+                history_lines.append(line)
+                budget -= line_bytes
+                if len(history_lines) >= self._MAX_RECENT_HISTORY:
+                    break
+            if history_lines:
+                history_lines.reverse()  # restore chronological order
+                truncated = "\n".join(history_lines)
+                parts.append(f"{header}\n\n{truncated}")
+                if len(history_lines) < len(entries):
+                    logger.info(
+                        "Recent History truncated: kept {}/{} entries ({} bytes)",
+                        len(history_lines), len(entries),
+                        len(truncated.encode("utf-8")),
+                    )
 
         return "\n\n---\n\n".join(parts)
 

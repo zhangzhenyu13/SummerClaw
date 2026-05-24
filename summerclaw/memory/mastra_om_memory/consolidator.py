@@ -17,6 +17,7 @@ storage, and the standard MemoryAlgorithm build interface.
 from __future__ import annotations
 
 import asyncio
+import json
 import weakref
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -65,6 +66,23 @@ class MastraOMConsolidator:
     _MAX_CHUNK_MESSAGES = 60
     _SAFETY_BUFFER = 1024
     _MAX_REFLECTION_RETRIES = 4  # up to compression level 4
+    # Byte-size safety net: if the session context (system prompt + history)
+    # exceeds this threshold in bytes, force consolidation even when the
+    # token estimate is still within budget.
+    # DashScope Qwen enforces input text ≤ 983,616 bytes (body ≤ ~6 MB).
+    # This threshold (~480 KB body / ~600 KB text) triggers Observer
+    # compression well before the API limits are hit.
+    _MAX_SESSION_BODY_BYTES = 480_000
+    # Maximum byte size for OBSERVATIONS.md before the Reflector is forced
+    # to condense (or hard-truncate if condensation fails).  This is the
+    # PRIMARY defense against unbounded system-prompt growth: even if token
+    # estimation says observations are within budget, the raw byte count
+    # of a verbose observation log can be many times larger than the token
+    # count would suggest.
+    # 200 KB keeps the observation log small enough that the full system
+    # prompt (identity + bootstrap + memory + skills) stays well under
+    # the 830 KB DashScope input-text cap.
+    _MAX_OBSERVATIONS_BYTES = 200_000
 
     def __init__(
         self,
@@ -111,22 +129,49 @@ class MastraOMConsolidator:
 
     def estimate_session_prompt_tokens(self, session: "Session") -> tuple[int, str]:
         """Estimate current prompt size for the normal session history view."""
-        history = session.get_history(max_messages=0)
-        channel, chat_id = (
-            session.key.split(":", 1) if ":" in session.key else (None, None)
-        )
-        probe_messages = self._build_messages(
-            history=history,
-            current_message="[token-probe]",
-            channel=channel,
-            chat_id=chat_id,
-        )
+        probe_messages = self._build_probe_messages(session)
         return estimate_prompt_tokens_chain(
             self.provider,
             self.model,
             probe_messages,
             self._get_tool_definitions(),
         )
+
+    def _build_probe_messages(self, session: "Session") -> list[dict[str, Any]]:
+        """Build probe messages for token/byte estimation."""
+        history = session.get_history(max_messages=0)
+        channel, chat_id = (
+            session.key.split(":", 1) if ":" in session.key else (None, None)
+        )
+        return self._build_messages(
+            history=history,
+            current_message="[token-probe]",
+            channel=channel,
+            chat_id=chat_id,
+        )
+
+    @staticmethod
+    def _estimate_body_bytes(messages: list[dict[str, Any]]) -> int:
+        """Estimate the serialized JSON byte size of *messages*.
+
+        Token count and byte count are not linearly correlated —
+        verbose tool results (e.g. from ``read_file`` or ``exec``) can
+        be within a token budget but still exceed provider-level byte
+        caps (e.g. Qwen's 6 MB limit).
+        """
+        try:
+            return len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+        except Exception:
+            total_chars = 0
+            for msg in messages:
+                for value in msg.values():
+                    if isinstance(value, str):
+                        total_chars += len(value)
+                    elif isinstance(value, (list, dict)):
+                        total_chars += len(json.dumps(value, ensure_ascii=False))
+                    elif value is not None:
+                        total_chars += len(str(value))
+            return total_chars
 
     # ------------------------------------------------------------------
     # Boundary picking (same algorithm as naive Consolidator)
@@ -342,21 +387,34 @@ class MastraOMConsolidator:
     async def reflect_and_condense(self) -> bool:
         """Condense observations via Reflector if they exceed threshold.
 
-        Returns True if reflection was performed.
+        Triggers when observation tokens exceed ``observation_tokens_threshold``
+        OR when the raw byte size of OBSERVATIONS.md exceeds
+        ``_MAX_OBSERVATIONS_BYTES`` (the byte-based trigger catches cases
+        where token estimation undercounts dense/verbose content).
+
+        If after all compression attempts OBSERVATIONS.md still exceeds
+        ``_MAX_OBSERVATIONS_BYTES``, the file is hard-truncated to keep the
+        system prompt manageable.
         """
         observations = self.store.read_observations()
         if not observations:
             return False
 
-        # Estimate tokens
-        obs_tokens = len(observations) // 4  # rough estimate: ~4 chars/token
+        # Estimate tokens (rough: ~4 chars/token)
+        obs_tokens = len(observations) // 4
+        obs_bytes = len(observations.encode("utf-8"))
 
-        if obs_tokens < self.observation_tokens_threshold:
+        # Trigger on token count OR byte size
+        token_trigger = obs_tokens >= self.observation_tokens_threshold
+        byte_trigger = obs_bytes >= self._MAX_OBSERVATIONS_BYTES
+
+        if not token_trigger and not byte_trigger:
             return False
 
         logger.info(
-            "Reflector triggered: {} estimated observation tokens (threshold={})",
+            "Reflector triggered: {} tokens (threshold={}), {} bytes (threshold={})",
             obs_tokens, self.observation_tokens_threshold,
+            obs_bytes, self._MAX_OBSERVATIONS_BYTES,
         )
 
         # Try with progressive compression
@@ -368,23 +426,48 @@ class MastraOMConsolidator:
                 continue
 
             reflected = result.get("observations", "")
+            reflected_bytes = len(reflected.encode("utf-8"))
             reflected_tokens = len(reflected) // 4
 
-            if reflected_tokens < self.observation_tokens_threshold or level == self._MAX_REFLECTION_RETRIES:
-                # Accept the result
+            # Accept if it fits within BOTH token and byte thresholds,
+            # or if we've reached max compression level.
+            fits_tokens = reflected_tokens < self.observation_tokens_threshold
+            fits_bytes = reflected_bytes < self._MAX_OBSERVATIONS_BYTES
+            if (fits_tokens and fits_bytes) or level == self._MAX_REFLECTION_RETRIES:
                 if reflected.strip():
                     self.store.replace_observations(reflected)
                     self.store.increment_generation()
                     logger.info(
-                        "Reflector: condensed observations (level={}, {}→{} tokens)",
+                        "Reflector: condensed observations (level={}, "
+                        "{}→{} tokens, {}→{} bytes)",
                         level, obs_tokens, reflected_tokens,
+                        obs_bytes, reflected_bytes,
                     )
                 return True
 
             # Result still too large, try higher compression
             logger.debug(
-                "Reflector level {} still too large ({} tokens), retrying...",
-                level, reflected_tokens,
+                "Reflector level {} still too large ({} tokens / {} bytes), retrying...",
+                level, reflected_tokens, reflected_bytes,
+            )
+
+        # ── Hard cap: if all reflection attempts failed to shrink
+        #     OBSERVATIONS.md below the byte limit, forcibly truncate
+        #     to prevent unbounded system-prompt growth. ─────────────────
+        observations = self.store.read_observations()
+        if observations and len(observations.encode("utf-8")) > self._MAX_OBSERVATIONS_BYTES:
+            truncated = observations.encode("utf-8")[:self._MAX_OBSERVATIONS_BYTES].decode("utf-8", errors="replace")
+            # Try to break at a newline boundary
+            last_nl = truncated.rfind("\n")
+            if last_nl > self._MAX_OBSERVATIONS_BYTES // 2:
+                truncated = truncated[:last_nl]
+            truncated += "\n\n[... older observations truncated — storage limit reached ...]"
+            self.store.replace_observations(truncated)
+            logger.error(
+                "OBSERVATIONS.md hard-truncated: {}→{} bytes — "
+                "Reflector was unable to compress sufficiently; "
+                "older observations were discarded",
+                len(observations.encode("utf-8")), len(truncated.encode("utf-8")),
             )
 
         return False
@@ -403,6 +486,10 @@ class MastraOMConsolidator:
         Observer calls pre-compute observations at regular token intervals
         (default: every 20% of threshold). Buffered chunks are activated
         when the sync threshold triggers.
+
+        **Reflector guarantee**: ``reflect_and_condense()`` is always called
+        before this method returns (via ``try/finally``), so OBSERVATIONS.md
+        cannot grow unbounded even when the consolidation loop exits early.
         """
         if not session.messages or self.context_window_tokens <= 0:
             return
@@ -424,6 +511,7 @@ class MastraOMConsolidator:
                 logger.exception("Token estimation failed for {}", session.key)
                 estimated, source = 0, "error"
             if estimated <= 0:
+                await self.reflect_and_condense()
                 return
 
             # ── Async buffering check (before sync threshold) ──────────
@@ -460,7 +548,24 @@ class MastraOMConsolidator:
                     "MastraOM consolidation idle {}: {}/{} via {}",
                     session.key, estimated, self.context_window_tokens, source,
                 )
-                return
+                # Token budget is fine, but check byte size as well.
+                # DashScope Qwen enforces input text ≤ 983,616 bytes
+                # which is much tighter than the 6 MB body cap.
+                # Proactively consolidate if we are close.
+                body_bytes = self._estimate_body_bytes(
+                    self._build_probe_messages(session)
+                )
+                if body_bytes <= self._MAX_SESSION_BODY_BYTES:
+                    # Budget is fine and body is small enough, but still
+                    # check if OBSERVATIONS.md itself needs reflection.
+                    await self.reflect_and_condense()
+                    return
+                logger.warning(
+                    "MastraOM: token budget OK ({} {} {}), but body ~{} bytes "
+                    "exceeds {} byte limit; forcing consolidation",
+                    estimated, "<" if estimated < budget else ">=", budget,
+                    body_bytes, self._MAX_SESSION_BODY_BYTES,
+                )
 
             # ── Sync consolidation (threshold crossed) ──────────────────
             logger.info(
@@ -481,64 +586,74 @@ class MastraOMConsolidator:
                 if obs_records:
                     session.add_message("system", f"[Memory]\n{obs_records}")
 
-            for round_num in range(self._MAX_CONSOLIDATION_ROUNDS):
-                if estimated <= target:
-                    return
+            # ── Observer loop — wrapped in try/finally so Reflector always
+            #     runs even when the loop exits early ─────────────────────
+            _reflected = False
+            try:
+                for round_num in range(self._MAX_CONSOLIDATION_ROUNDS):
+                    if estimated <= target:
+                        return  # finally block will run reflect_and_condense
 
-                boundary = self.pick_consolidation_boundary(
-                    session, max(1, estimated - target)
-                )
-                if boundary is None:
-                    logger.info(
-                        "MastraOM consolidation: no safe boundary for {} (round {})",
-                        session.key, round_num,
+                    boundary = self.pick_consolidation_boundary(
+                        session, max(1, estimated - target)
                     )
-                    return
+                    if boundary is None:
+                        logger.info(
+                            "MastraOM consolidation: no safe boundary for {} (round {})",
+                            session.key, round_num,
+                        )
+                        return
 
-                end_idx = boundary[0]
-                end_idx = self._cap_consolidation_boundary(session, end_idx)
-                if end_idx is None:
+                    end_idx = boundary[0]
+                    end_idx = self._cap_consolidation_boundary(session, end_idx)
+                    if end_idx is None:
+                        logger.info(
+                            "MastraOM consolidation: no capped boundary for {} (round {})",
+                            session.key, round_num,
+                        )
+                        return
+
+                    chunk = session.messages[session.last_consolidated:end_idx]
+                    if not chunk:
+                        return
+
                     logger.info(
-                        "MastraOM consolidation: no capped boundary for {} (round {})",
-                        session.key, round_num,
+                        "MastraOM observation round {} for {}: {}/{} via {}, chunk={} msgs",
+                        round_num, session.key, estimated,
+                        self.context_window_tokens, source, len(chunk),
                     )
-                    return
 
-                chunk = session.messages[session.last_consolidated:end_idx]
-                if not chunk:
-                    return
+                    # Observe the message chunk
+                    observations_text = await self.observe_and_store(chunk)
+                    if not observations_text:
+                        return
 
-                logger.info(
-                    "MastraOM observation round {} for {}: {}/{} via {}, chunk={} msgs",
-                    round_num, session.key, estimated,
-                    self.context_window_tokens, source, len(chunk),
-                )
+                    # Inject observations as session messages so downstream
+                    # consumers (SkillAutogen, etc.) can read them transparently
+                    # without knowing about Observer internals.
+                    obs_records = self.store._observations_as_records(observations_text)
+                    if obs_records:
+                        session.add_message("system", f"[Memory]\n{obs_records}")
 
-                # Observe the message chunk
-                observations_text = await self.observe_and_store(chunk)
-                if not observations_text:
-                    return
+                    session.last_consolidated = end_idx
+                    self.sessions.save(session)
 
-                # Inject observations as session messages so downstream
-                # consumers (SkillAutogen, etc.) can read them transparently
-                # without knowing about Observer internals.
-                obs_records = self.store._observations_as_records(observations_text)
-                if obs_records:
-                    session.add_message("system", f"[Memory]\n{obs_records}")
+                    try:
+                        estimated, source = self.estimate_session_prompt_tokens(session)
+                    except Exception:
+                        logger.exception("Token estimation failed for {}", session.key)
+                        estimated, source = 0, "error"
+                    if estimated <= 0:
+                        return
 
-                session.last_consolidated = end_idx
-                self.sessions.save(session)
-
-                try:
-                    estimated, source = self.estimate_session_prompt_tokens(session)
-                except Exception:
-                    logger.exception("Token estimation failed for {}", session.key)
-                    estimated, source = 0, "error"
-                if estimated <= 0:
-                    return
-
-        # After consolidation, check if observations need reflection
-        await self.reflect_and_condense()
+                # After consolidation loop, check if observations need reflection
+                await self.reflect_and_condense()
+                _reflected = True
+            finally:
+                # Guarantee: Reflector always runs, even on early return.
+                # OBSERVATIONS.md must never grow unbounded.
+                if not _reflected:
+                    await self.reflect_and_condense()
 
     # ------------------------------------------------------------------
     # extract_and_store (Hermes-Autogen integration)

@@ -187,4 +187,5 @@ def _make_provider(config: Any) -> Any:
         max_tokens=defaults.max_tokens,
         reasoning_effort=defaults.reasoning_effort,
     )
+    provider.max_concurrency = defaults.max_concurrency
     return provider

@@ -358,10 +358,6 @@ class AgentLoop:
         # planning (auto, plan, search-plan).  Per-message prefixes (/plan,
         # /search-plan) can override the config default at runtime, so the
         # planner must exist even when the default config says "simple".
-        _needs_complexity = self._execution_mode == "auto"
-
-        # Always instantiate the TaskPlanner — per-message prefixes may
-        # override the config default, so the planner must always be available.
         from summerclaw.agent.planner import TaskPlanner
         self._planner: TaskPlanner | None = TaskPlanner(
             provider=provider,
@@ -370,16 +366,16 @@ class AgentLoop:
             max_subagent_depth=max_subagent_depth,
         )
 
-        if _needs_complexity:
-            self._complexity_evaluator: LLMComplexityEvaluator | None = (
-                LLMComplexityEvaluator(
-                    provider=provider,
-                    model=self.model,
-                    max_tool_result_chars=self.max_tool_result_chars,
-                )
+        # Always instantiate the LLMComplexityEvaluator — per-message prefixes
+        # (/auto) can override the config default at runtime, so the evaluator
+        # must exist even when the default config says "simple" / "plan".
+        self._complexity_evaluator: LLMComplexityEvaluator | None = (
+            LLMComplexityEvaluator(
+                provider=provider,
+                model=self.model,
+                max_tool_result_chars=self.max_tool_result_chars,
             )
-        else:
-            self._complexity_evaluator = None
+        )
 
         # TaskEvaluator for closed-loop replanning: only when planner exists and replan enabled
         if self._planner is not None and max_replan_iterations > 0:
@@ -696,7 +692,8 @@ class AgentLoop:
                 await on_stream(result.final_content or "")
                 await on_stream_end(resuming=False)
         elif result.stop_reason == "error":
-            logger.error("LLM returned error: {}", (result.final_content or "")[:200])
+            logger.error("LLM returned error: {}", (result.final_content or "")[:200] + f", input={result.usage}--{len(initial_messages)}msgs, {sum(len(m['content']) for m in initial_messages)}"+
+            f",  {len(initial_messages[0]['content'])}---sys={len(initial_messages[0])}" )
         return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
 
     async def run(self) -> None:
@@ -1090,16 +1087,22 @@ class AgentLoop:
             pass
         elif effective_mode == "auto" and self._planner is not None:
             # Auto mode: let the complexity evaluator decide.
-            _should_plan = isinstance(msg.content, str) and await self._complexity_evaluator.evaluate(
-                msg.content, channel=msg.channel, chat_id=msg.chat_id,
-            )
-            logger.info(
-                "LLMComplexityEvaluator: result → {} ({} planning)",
-                "COMPLEX" if _should_plan else "SIMPLE",
-                "triggering" if _should_plan else "skipping",
-            )
-            if _should_plan and self._search_planner is not None:
-                _should_search = True
+            if self._complexity_evaluator is not None:
+                _should_plan = isinstance(msg.content, str) and await self._complexity_evaluator.evaluate(
+                    msg.content, channel=msg.channel, chat_id=msg.chat_id,
+                )
+                logger.info(
+                    "LLMComplexityEvaluator: result → {} ({} planning)",
+                    "COMPLEX" if _should_plan else "SIMPLE",
+                    "triggering" if _should_plan else "skipping",
+                )
+                if _should_plan and self._search_planner is not None:
+                    _should_search = True
+            else:
+                # Should not happen (evaluator is always created), but guard defensively.
+                logger.warning("Auto mode: LLMComplexityEvaluator unexpectedly None, falling back to simple mode")
+                _should_plan = False
+                _should_search = False
 
         # _plan_progress unifies the two progress callbacks:
         #   - process_direct (single CLI msg): on_progress=_cli_progress → printed directly

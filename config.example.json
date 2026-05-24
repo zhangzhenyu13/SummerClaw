@@ -20,6 +20,8 @@
       "_model_note": "← Replace with your actual model name (e.g. gpt-4o, claude-sonnet-4, deepseek-v3, gemini-2.5-pro)",
       "provider": "auto",
       "maxTokens": 65536,
+      "maxConcurrency": 20,
+      "_maxConcurrency_note": "← Max concurrent LLM API calls (0 = unlimited, default 20)",
       "contextWindowTokens": 1000000,
       "contextBlockLimit": null,
       "temperature": 0.1,

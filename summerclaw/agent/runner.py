@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import inspect
+import json
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,23 @@ _MAX_INJECTION_CYCLES = 5
 _SNIP_SAFETY_BUFFER = 1024
 _MICROCOMPACT_KEEP_RECENT = 10
 _MICROCOMPACT_MIN_CHARS = 500
+# Maximum request body bytes before trimming (5.5 MB, under common 6 MB API limits).
+# Some providers (e.g. Qwen) enforce a hard byte cap on the JSON request body
+# that is independent of the token budget.  This safety net ensures the
+# serialized payload stays under the provider limit.
+# Maximum request body bytes before trimming.
+# Qwen / DashScope enforce a hard 6 MB (6,291,456 byte) cap on the full
+# JSON request body.  The messages array is the dominant contributor, but
+# tool definitions, model name, temperature, max_tokens, etc. also add
+# overhead (typically 100–500 KB).  This threshold (~4.5 MB) leaves
+# generous headroom for that overhead so that the trimmed messages +
+# request envelope stays safely under 6 MB.
+_MAX_REQUEST_BODY_BYTES = 4_500_000
+# DashScope Qwen API enforces a tighter limit on the *input text* length
+# (the actual content of all messages, not the JSON wrapper): 983,616 bytes.
+# This threshold (~830 KB) stays safely under that limit and also well
+# under the 6 MB body cap above.
+_MAX_INPUT_TEXT_BYTES = 830_000
 _COMPACTABLE_TOOLS = frozenset({
     "read_file", "exec", "grep", "glob",
     "web_search", "web_fetch", "list_dir",
@@ -907,6 +925,58 @@ class AgentRunner:
         return updated
 
     @staticmethod
+    def _estimate_message_body_bytes(messages: list[dict[str, Any]]) -> int:
+        """Estimate the serialized JSON byte size of *messages*.
+
+        Uses ``json.dumps`` for accuracy because token count and byte count
+        are not linearly correlated — verbose tool results can be within a
+        token budget but still exceed provider-level byte caps (e.g. Qwen's
+        6 MB limit).
+        """
+        try:
+            return len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+        except Exception:
+            # Fall back to a rough character-count heuristic.
+            total_chars = 0
+            for msg in messages:
+                for value in msg.values():
+                    if isinstance(value, str):
+                        total_chars += len(value)
+                    elif isinstance(value, (list, dict)):
+                        total_chars += len(json.dumps(value, ensure_ascii=False))
+                    elif value is not None:
+                        total_chars += len(str(value))
+            return total_chars  # ~1 byte per char for mostly-ASCII content
+
+    @staticmethod
+    def _estimate_input_text_bytes(messages: list[dict[str, Any]]) -> int:
+        """Estimate the raw input text length (sum of ``content`` fields).
+
+        Differs from ``_estimate_message_body_bytes`` which measures the
+        serialized JSON body (including role keys, structure, etc.).
+        DashScope Qwen enforces ``Range of input length should be
+        [1, 983616]`` on the raw text, which is tighter than the 6 MB
+        request-body cap.
+        """
+        total = 0
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, str):
+                total += len(content.encode("utf-8"))
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and "text" in part:
+                        total += len(str(part["text"]).encode("utf-8"))
+                    elif isinstance(part, str):
+                        total += len(part.encode("utf-8"))
+            # tool_call_id and name contribute to the input for tool-role msgs
+            for key in ("tool_call_id", "name"):
+                val = msg.get(key)
+                if isinstance(val, str):
+                    total += len(val.encode("utf-8"))
+        return total
+
+    @staticmethod
     def _microcompact(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Replace old compactable tool results with one-line summaries."""
         compactable_indices: list[int] = []
@@ -978,7 +1048,25 @@ class AgentRunner:
             spec.tools.get_definitions(),
         )
         if estimate <= budget:
-            return messages
+            # Token budget is fine, but we still need byte-size safety nets
+            # for providers that enforce hard caps independent of the token
+            # count:
+            #   - DashScope Qwen: input text ≤ 983,616 bytes
+            #   - Generic Qwen:   request body ≤ 6 MB
+            body_bytes = self._estimate_message_body_bytes(messages)
+            text_bytes = self._estimate_input_text_bytes(messages)
+            if body_bytes <= _MAX_REQUEST_BODY_BYTES and text_bytes <= _MAX_INPUT_TEXT_BYTES:
+                return messages
+            logger.warning(
+                "Token budget OK ({} <= {}), but payload too large: "
+                "body={} bytes, text={} bytes (limits: body={}, text={}) — "
+                "upstream compaction did NOT shrink the payload enough; "
+                "falling back to emergency snipping",
+                estimate, budget, body_bytes, text_bytes,
+                _MAX_REQUEST_BODY_BYTES, _MAX_INPUT_TEXT_BYTES,
+            )
+            # Fall through to the token-snipping logic below, which will also
+            # trigger the byte-size safety net at the end.
 
         system_messages = [dict(msg) for msg in messages if msg.get("role") == "system"]
         non_system = [dict(msg) for msg in messages if msg.get("role") != "system"]
@@ -1020,7 +1108,124 @@ class AgentRunner:
             start = find_legal_message_start(kept)
             if start:
                 kept = kept[start:]
-        return system_messages + kept
+        result = system_messages + kept
+
+        # ------------------------------------------------------------------
+        # Byte-size safety net
+        # DashScope Qwen enforces *two* independent caps:
+        #   1. input text  ≤ 983,616 bytes (raw content)
+        #   2. request body ≤ ~6 MB      (serialized JSON)
+        # Check both and trim to the tighter constraint.
+        # ------------------------------------------------------------------
+        body_bytes = self._estimate_message_body_bytes(result)
+        text_bytes = self._estimate_input_text_bytes(result)
+        if body_bytes > _MAX_REQUEST_BODY_BYTES or text_bytes > _MAX_INPUT_TEXT_BYTES:
+            logger.warning(
+                "After token snipping, payload still too large: "
+                "body={} bytes (limit={}), text={} bytes (limit={}) — "
+                "upstream memory compaction is NOT working "
+                "or the system prompt itself is too large; "
+                "emergency-trimming non-system messages",
+                body_bytes, _MAX_REQUEST_BODY_BYTES,
+                text_bytes, _MAX_INPUT_TEXT_BYTES,
+            )
+            # Iteratively drop oldest non-system messages until under BOTH limits.
+            trimmed_non_system = list(kept)
+            while trimmed_non_system:
+                trial = system_messages + trimmed_non_system
+                if (self._estimate_message_body_bytes(trial) <= _MAX_REQUEST_BODY_BYTES
+                        and self._estimate_input_text_bytes(trial) <= _MAX_INPUT_TEXT_BYTES):
+                    break
+                trimmed_non_system.pop(0)
+            if trimmed_non_system:
+                # Restore a legal start (user message, alternating roles).
+                start = find_legal_message_start(trimmed_non_system)
+                if start:
+                    trimmed_non_system = trimmed_non_system[start:]
+                # If the oldest message is not a user message, walk back to
+                # recover one from the original kept list.
+                if trimmed_non_system and trimmed_non_system[0].get("role") != "user":
+                    for idx in range(len(kept) - 1, -1, -1):
+                        if kept[idx].get("role") == "user":
+                            trimmed_non_system = kept[idx:] + trimmed_non_system
+                            break
+                result = system_messages + trimmed_non_system
+            else:
+                # Even non-system messages were trimmed to zero — keep the
+                # very last user message so the API call is still meaningful.
+                last_user = None
+                for msg in reversed(kept):
+                    if msg.get("role") == "user":
+                        last_user = msg
+                        break
+                if last_user:
+                    result = system_messages + [last_user]
+                else:
+                    result = system_messages + [non_system[-1]] if non_system else system_messages
+
+            # ------------------------------------------------------------------
+            # Final safety check: after trimming all non-system messages, the
+            # system prompt itself may still exceed the byte budget.  In that
+            # case we must truncate system content — a degraded response is
+            # better than a hard API rejection.
+            # ------------------------------------------------------------------
+            _final_body = self._estimate_message_body_bytes(result)
+            _final_text = self._estimate_input_text_bytes(result)
+            if _final_body > _MAX_REQUEST_BODY_BYTES or _final_text > _MAX_INPUT_TEXT_BYTES:
+                # Truncate the last (typically largest) system message.
+                # Keep the first system message(s) intact (identity, bootstrap
+                # files) and shrink the trailing ones (MEMORY.md, observations).
+                sys_msgs = [m for m in result if m.get("role") == "system"]
+                non_sys = [m for m in result if m.get("role") != "system"]
+                # Target: truncate system messages to fit within the available
+                # budget, but keep at least a minimal system prompt.
+                MIN_SYSTEM_CHARS = 512
+                for idx in range(len(sys_msgs) - 1, -1, -1):
+                    content = sys_msgs[idx].get("content", "")
+                    if not isinstance(content, str) or len(content) <= MIN_SYSTEM_CHARS:
+                        continue
+                    trial = [dict(m) for m in sys_msgs]
+                    # Binary-search-like shrink: halve until it fits.
+                    while len(content) > MIN_SYSTEM_CHARS:
+                        content = content[:max(MIN_SYSTEM_CHARS, len(content) // 2)]
+                        trial[idx]["content"] = content + "\n\n[... system prompt truncated to fit provider byte limits ...]"
+                        trial_result = trial + non_sys
+                        if (self._estimate_message_body_bytes(trial_result) <= _MAX_REQUEST_BODY_BYTES
+                                and self._estimate_input_text_bytes(trial_result) <= _MAX_INPUT_TEXT_BYTES):
+                            break
+                    if (self._estimate_message_body_bytes(trial + non_sys) <= _MAX_REQUEST_BODY_BYTES
+                            and self._estimate_input_text_bytes(trial + non_sys) <= _MAX_INPUT_TEXT_BYTES):
+                        result = trial + non_sys
+                        break
+                else:
+                    # Could not shrink system enough — keep bare minimum.
+                    result = [{"role": "system", "content": "You are a helpful assistant. The system prompt was truncated because it exceeded provider byte limits."}] + non_sys
+                logger.error(
+                    "CRITICAL: system prompt itself exceeded byte limits; "
+                    "truncated system content (body {}→{} bytes, text {}→{} bytes)",
+                    _final_body,
+                    self._estimate_message_body_bytes(result),
+                    _final_text,
+                    self._estimate_input_text_bytes(result),
+                )
+
+            # Summary: log how many messages were sacrificed.
+            trimmed_body = self._estimate_message_body_bytes(result)
+            trimmed_text = self._estimate_input_text_bytes(result)
+            dropped_cnt = len(kept) - len([m for m in result if m.get("role") != "system"])
+            logger.error(
+                "Emergency snip: dropped {} messages, "
+                "body {}→{} bytes ({:.1f}→{:.1f} MB), "
+                "text {}→{} bytes ({:.1f}→{:.1f} MB) — "
+                "check upstream memory compaction configuration",
+                dropped_cnt,
+                body_bytes, trimmed_body,
+                body_bytes / 1048576, trimmed_body / 1048576,
+                text_bytes, trimmed_text,
+                text_bytes / 1048576, trimmed_text / 1048576,
+            )
+
+        return result
 
     def _partition_tool_batches(
         self,

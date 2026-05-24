@@ -173,6 +173,7 @@ class AgentDefaults(Base):
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
     )
     max_tokens: int = 8192
+    max_concurrency: int = Field(default=20, ge=0)  # Max concurrent LLM API calls per provider (0 = unlimited)
     context_window_tokens: int = 65_536
     context_block_limit: int | None = None
     temperature: float = 0.1

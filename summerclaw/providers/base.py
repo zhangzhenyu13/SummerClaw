@@ -5,6 +5,7 @@ import json
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -162,6 +163,21 @@ class LLMProvider(ABC):
         self.api_key = api_key
         self.api_base = api_base
         self.generation: GenerationSettings = GenerationSettings()
+        self.max_concurrency: int = 20
+        self._concurrency_semaphore: asyncio.Semaphore | None = None
+
+    def _get_concurrency_semaphore(self) -> asyncio.Semaphore | None:
+        """Return a shared semaphore for limiting concurrent LLM API calls.
+
+        Returns ``None`` when ``max_concurrency <= 0`` (unlimited).
+        The semaphore is created lazily on first access so that
+        ``max_concurrency`` can be changed after construction.
+        """
+        if self.max_concurrency <= 0:
+            return None
+        if self._concurrency_semaphore is None:
+            self._concurrency_semaphore = asyncio.Semaphore(self.max_concurrency)
+        return self._concurrency_semaphore
 
     @staticmethod
     def _sanitize_empty_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -477,12 +493,14 @@ class LLMProvider(ABC):
 
     async def _safe_chat(self, **kwargs: Any) -> LLMResponse:
         """Call chat() and convert unexpected exceptions to error responses."""
-        try:
-            return await self.chat(**kwargs)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+        sem = self._get_concurrency_semaphore()
+        async with (sem or nullcontext()):
+            try:
+                return await self.chat(**kwargs)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
 
     async def chat_stream(
         self,
@@ -513,12 +531,14 @@ class LLMProvider(ABC):
 
     async def _safe_chat_stream(self, **kwargs: Any) -> LLMResponse:
         """Call chat_stream() and convert unexpected exceptions to error responses."""
-        try:
-            return await self.chat_stream(**kwargs)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+        sem = self._get_concurrency_semaphore()
+        async with (sem or nullcontext()):
+            try:
+                return await self.chat_stream(**kwargs)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
 
     async def chat_stream_with_retry(
         self,
