@@ -207,15 +207,46 @@ class QQChannel(BaseChannel):
         await self._run_bot()
 
     async def _run_bot(self) -> None:
-        """Run the bot connection with auto-reconnect."""
+        """Run the bot connection with auto-reconnect and exponential backoff."""
+        max_retries = 10
+        base_delay = 5  # seconds
+        max_delay = 300  # 5 minutes cap
+        attempt = 0
+
         while self._running:
             try:
                 await self._client.start(appid=self.config.app_id, secret=self.config.secret)
+                # Reset counter on successful connection
+                attempt = 0
             except Exception as e:
-                logger.warning("QQ bot error: {}", e)
-            if self._running:
-                logger.info("Reconnecting QQ bot in 5 seconds...")
-                await asyncio.sleep(5)
+                attempt += 1
+                err_str = str(e)
+                is_dns = "name resolution" in err_str.lower() or "getaddrinfo" in err_str.lower()
+
+                if is_dns:
+                    logger.warning(
+                        "QQ bot DNS resolution failed (attempt {}/{}): {}. "
+                        "Check network connectivity and DNS settings.",
+                        attempt, max_retries, e,
+                    )
+                else:
+                    logger.warning(
+                        "QQ bot error (attempt {}/{}): {}",
+                        attempt, max_retries, e,
+                    )
+
+                if attempt >= max_retries:
+                    logger.error(
+                        "QQ bot failed after {} attempts. Giving up. "
+                        "Check network, DNS, and QQ credentials.",
+                        max_retries,
+                    )
+                    break
+
+                delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                if self._running:
+                    logger.info("Reconnecting QQ bot in {} seconds...", delay)
+                    await asyncio.sleep(delay)
 
     async def stop(self) -> None:
         """Stop bot and cleanup resources."""

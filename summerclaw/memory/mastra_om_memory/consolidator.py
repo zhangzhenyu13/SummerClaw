@@ -328,8 +328,8 @@ class MastraOMConsolidator:
     ) -> str | None:
         """Observe messages, store raw to history and observations to OBSERVATIONS.md.
 
-        Raw messages → history.jsonl (for Dream analysis).
-        Observer output → OBSERVATIONS.md.
+        Raw messages → history.jsonl (for Dream analysis + auto-recall).
+        Observer output → OBSERVATIONS.md (with history_cursor index).
         OM summary → om-ops.jsonl (for pipeline debugging).
 
         Returns the new observations text, or None if nothing was observed.
@@ -338,8 +338,11 @@ class MastraOMConsolidator:
             return None
 
         try:
+            # Track cursor range for history_cursor indexing
+            cursor_before = self.store._next_cursor()
+
             # Always write raw messages to history.jsonl for Dream analysis
-            self.store.append_history(
+            cursor_after = self.store.append_history(
                 self.store._format_messages(messages)
             )
 
@@ -364,19 +367,24 @@ class MastraOMConsolidator:
                     range_spec=message_range,
                 )
 
-            # Append to observation log
-            self.store.append_observations(observations_text)
+            # Append to observation log with history_cursor index
+            self.store.append_observations(
+                observations_text,
+                history_cursor_start=cursor_before,
+                history_cursor_end=cursor_after,
+            )
 
             # Write OM operation summary to om-ops.jsonl (not history anymore)
             summary = (
                 f"[OM-OBSERVED] {len(messages)} messages → "
-                f"{len(observations_text)} chars of observations"
+                f"{len(observations_text)} chars of observations "
+                f"(history_cursor={cursor_before}:{cursor_after})"
             )
             self.store.append_om_ops(summary)
 
             logger.info(
-                "Observer: {} messages → {} chars of observations",
-                len(messages), len(observations_text),
+                "Observer: {} messages → {} chars of observations (cursor={}:{})",
+                len(messages), len(observations_text), cursor_before, cursor_after,
             )
             return observations_text
         except Exception:
@@ -679,8 +687,11 @@ class MastraOMConsolidator:
         logger.info("[OM:extract] extracting facts from {} messages", len(messages))
 
         try:
+            # Track cursor range for history_cursor indexing
+            cursor_before = self.store._next_cursor()
+
             # Write raw messages to history.jsonl for Dream analysis
-            self.store.append_history(
+            cursor_after = self.store.append_history(
                 self.store._format_messages(messages)
             )
 
@@ -701,8 +712,12 @@ class MastraOMConsolidator:
                 )
                 return []
 
-            # Store the observations
-            self.store.append_observations(observations_text)
+            # Store the observations with history_cursor index
+            self.store.append_observations(
+                observations_text,
+                history_cursor_start=cursor_before,
+                history_cursor_end=cursor_after,
+            )
 
             # Write OM operation summary to om-ops.jsonl
             self.store.append_om_ops(

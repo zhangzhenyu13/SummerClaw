@@ -212,6 +212,9 @@ class ChannelManager:
         if msg.metadata.get("_stream_delta") or msg.metadata.get("_stream_end"):
             await channel.send_delta(msg.chat_id, msg.content, msg.metadata)
         elif not msg.metadata.get("_streamed"):
+            # FileLinker P2P intercept — replace large files with download links
+            from summerclaw.filelinker.middleware import FileLinkerMiddleware
+            msg = await FileLinkerMiddleware.intercept(msg, channel)
             await channel.send(msg)
 
     def _coalesce_stream_deltas(

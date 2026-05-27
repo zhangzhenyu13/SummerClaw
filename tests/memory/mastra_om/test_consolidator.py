@@ -128,7 +128,7 @@ class TestObserveAndStore:
         messages = [{"role": "user", "content": "hello"}]
         result = await consolidator.observe_and_store(messages)
         assert result is None
-        entries = store.read_unprocessed_history(since_cursor=0)
+        entries = store._read_entries()
         assert len(entries) >= 1
         assert any("[RAW]" in e["content"] for e in entries)
 
@@ -140,7 +140,7 @@ class TestObserveAndStore:
         messages = [{"role": "user", "content": "test"}]
         result = await consolidator.observe_and_store(messages)
         assert result is None
-        entries = store.read_unprocessed_history(since_cursor=0)
+        entries = store._read_entries()
         assert any("[RAW]" in e["content"] for e in entries)
 
     async def test_appends_valid_observations(self, consolidator, mock_provider, store):
@@ -159,12 +159,14 @@ Date: May 9
         assert "dark mode" in result
         obs = store.read_observations()
         assert "dark mode" in obs
-        # Check raw messages stored in history
-        entries = store.read_unprocessed_history(since_cursor=0)
+        # Check raw messages stored in history (use _read_entries since read_unprocessed_history returns [])
+        entries = store._read_entries()
         assert any("dark mode" in e["content"] for e in entries)
         # Check OM summary stored in om-ops
         om_ops = store.read_om_ops()
         assert any("[OM-OBSERVED]" in e["content"] for e in om_ops)
+        # Check history_cursor was embedded
+        assert 'history_cursor="' in obs
 
 
 # ------------------------------------------------------------------

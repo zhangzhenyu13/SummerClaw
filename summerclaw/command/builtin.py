@@ -554,6 +554,10 @@ def build_help_text() -> str:
         "/dream-log — Show what the last Dream changed",
         "/dream-restore — Revert memory to a previous state",
         "/skill-autogen — Review recent conversation for reusable skills",
+        "/train — List available training algorithms / start training",
+        "/train <alg> — Start training with specified algorithm",
+        "/train status — Show active training sessions",
+        "/train stop <alg> — Cancel a running training",
         "/help — Show available commands",
     ]
     return "\n".join(lines)

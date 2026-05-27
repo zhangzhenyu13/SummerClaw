@@ -58,21 +58,14 @@ class TestMastraOMStoreHistory:
         cursor2 = store.append_history("Second entry")
         assert cursor2 == 2
 
-    def test_read_unprocessed_history(self, store):
+    def test_read_unprocessed_history_returns_empty(self, store):
+        """mastra_om always returns empty list — obs replaces raw history injection."""
         store.append_history("Entry 1")
         store.append_history("Entry 2")
         store.append_history("Entry 3")
-
-        # Only entries with cursor > 1
-        entries = store.read_unprocessed_history(since_cursor=1)
-        assert len(entries) == 2
-        assert entries[0]["cursor"] == 2
-        assert entries[1]["cursor"] == 3
-
-    def test_read_unprocessed_history_none(self, store):
-        store.append_history("Entry 1")
-        entries = store.read_unprocessed_history(since_cursor=5)
-        assert entries == []
+        assert store.read_unprocessed_history(since_cursor=0) == []
+        assert store.read_unprocessed_history(since_cursor=1) == []
+        assert store.read_unprocessed_history(since_cursor=100) == []
 
     def test_compact_history(self, store):
         store.max_history_entries = 3
@@ -192,6 +185,25 @@ class TestMastraOMStoreRawArchive:
     def test_raw_archive(self, store):
         messages = [{"role": "user", "content": "test"}]
         store.raw_archive(messages)
-        entries = store.read_unprocessed_history(since_cursor=0)
-        assert len(entries) == 1
-        assert "[RAW]" in entries[0]["content"]
+        # read_unprocessed_history returns [] for mastra_om; use _read_entries directly
+        entries = store._read_entries()
+        assert len(entries) >= 1
+        assert "[RAW]" in entries[-1]["content"]
+
+
+class TestMastraOMStoreDreamGeneration:
+    """Tests for dream generation tracking."""
+
+    def test_dream_generation_default_zero(self, store):
+        assert store.get_last_dream_generation() == 0
+
+    def test_set_and_get_dream_generation(self, store):
+        store.set_last_dream_generation(5)
+        assert store.get_last_dream_generation() == 5
+
+    def test_dream_generation_persists(self, tmp_path):
+        s1 = MastraOMStore(tmp_path)
+        s1.set_last_dream_generation(10)
+        s2 = MastraOMStore(tmp_path)
+        assert s2.get_last_dream_generation() == 10
+

@@ -192,20 +192,19 @@ class TestDreamIntegration:
             store=store,
             provider=mock_provider,
             model="test",
-            max_batch_size=5,
         )
         dream._runner = mock_runner
 
-        # No history → noop
+        # No generation advance → noop
         result = await dream.run()
         assert result is False
 
-        # With history → runs
-        store.append_history("Test event")
+        # With generation advance → runs
+        store.increment_generation()
         result = await dream.run()
         assert result is True
 
-    async def test_dream_skips_when_no_history(self, tmp_path):
+    async def test_dream_skips_when_no_new_generation(self, tmp_path):
         store = MastraOMStore(tmp_path)
         mock_provider = MagicMock()
 

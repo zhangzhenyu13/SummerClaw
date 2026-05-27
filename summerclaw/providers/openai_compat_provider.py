@@ -911,6 +911,7 @@ class OpenAICompatProvider(LLMProvider):
         reasoning_effort: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
     ) -> LLMResponse:
+        _DBG = os.environ.get("SUMMERCLAW_DEBUG_LLM")
         try:
             if self._should_use_responses_api(model, reasoning_effort):
                 try:
@@ -918,6 +919,8 @@ class OpenAICompatProvider(LLMProvider):
                         messages, tools, model, max_tokens, temperature,
                         reasoning_effort, tool_choice,
                     )
+                    if _DBG:
+                        print(f"[PROVIDER-DEBUG] chat() using responses API: {list(body.keys())}", flush=True)
                     return parse_response_output(await self._client.responses.create(**body))
                 except Exception as responses_error:
                     if not self._should_fallback_from_responses_error(responses_error):
@@ -927,6 +930,11 @@ class OpenAICompatProvider(LLMProvider):
                 messages, tools, model, max_tokens, temperature,
                 reasoning_effort, tool_choice,
             )
+            if _DBG:
+                print(f"[PROVIDER-DEBUG] chat() calling API: model={kwargs.get('model')} | "
+                      f"max_tokens={kwargs.get('max_tokens')} | max_completion_tokens={kwargs.get('max_completion_tokens')} | "
+                      f"temperature={kwargs.get('temperature')} | tools={'yes' if 'tools' in kwargs else 'no'} | "
+                      f"reasoning_effort={kwargs.get('reasoning_effort')} | extra_body={kwargs.get('extra_body')}", flush=True)
             return self._parse(await self._client.chat.completions.create(**kwargs))
         except Exception as e:
             return self._handle_error(e, spec=self._spec, api_base=self.api_base)
@@ -942,7 +950,13 @@ class OpenAICompatProvider(LLMProvider):
         tool_choice: str | dict[str, Any] | None = None,
         on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
-        idle_timeout_s = int(os.environ.get("NANOBOT_STREAM_IDLE_TIMEOUT_S", "90"))
+        # In debug mode, use a generous 10min idle timeout so slow models
+        # aren't killed mid-reasoning.
+        _debug = os.environ.get("SUMMERCLAW_DEBUG_LLM")
+        idle_timeout_s = int(os.environ.get(
+            "NANOBOT_STREAM_IDLE_TIMEOUT_S",
+            "600" if _debug else "90",
+        ))
         try:
             if self._should_use_responses_api(model, reasoning_effort):
                 try:
@@ -985,6 +999,12 @@ class OpenAICompatProvider(LLMProvider):
             )
             kwargs["stream"] = True
             kwargs["stream_options"] = {"include_usage": True}
+            if _debug:
+                print(f"[PROVIDER-DEBUG] chat_stream() calling API: model={kwargs.get('model')} | "
+                      f"max_tokens={kwargs.get('max_tokens')} | max_completion_tokens={kwargs.get('max_completion_tokens')} | "
+                      f"temperature={kwargs.get('temperature')} | tools={'yes' if 'tools' in kwargs else 'no'} | "
+                      f"reasoning_effort={kwargs.get('reasoning_effort')} | extra_body={kwargs.get('extra_body')} | "
+                      f"idle_timeout={idle_timeout_s}s", flush=True)
             stream = await self._client.chat.completions.create(**kwargs)
             chunks: list[Any] = []
             stream_iter = stream.__aiter__()

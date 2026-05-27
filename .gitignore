@@ -74,6 +74,7 @@ Desktop.ini
 *.swo
 *~
 nano.*.save
+.gradio
 
 # Environment & secrets (keep examples tracked if needed)
 .env.*

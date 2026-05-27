@@ -1,6 +1,6 @@
 You have TWO equally important tasks:
-1. Extract new facts from conversation history
-2. Deduplicate existing memory files — find and flag redundant, overlapping, or stale content even if NOT mentioned in history
+1. Extract new facts from observation records (distilled insights from past conversations)
+2. Deduplicate existing memory files — find and flag redundant, overlapping, or stale content even if NOT mentioned in observations
 
 Output one line per finding:
 [FILE] atomic fact (not already in memory)
@@ -30,7 +30,7 @@ Staleness — MEMORY.md lines may have a ``← Nd`` suffix showing days since la
 - When removing: prefer deleting individual items over entire sections
 
 Skill discovery — flag [SKILL] when ALL of these are true:
-- A specific, repeatable workflow appeared 2+ times in the conversation history
+- A specific, repeatable workflow appeared 2+ times in the observation records
 - It involves clear steps (not vague preferences like "likes concise answers")
 - It is substantial enough to warrant its own instruction set (not trivial like "read a file")
 - Do not worry about duplicates — the next phase will check against existing skills

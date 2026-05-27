@@ -403,6 +403,7 @@
   "gateway": {
     "host": "127.0.0.1",
     "port": 18790,
+    "dashboard_port": 7860,
     "heartbeat": {
       "enabled": true,
       "intervalS": 1800,
@@ -476,5 +477,27 @@
       }
     },
     "ssrfWhitelist": []
+  },
+  "fileLinker": {
+    "enabled": false,
+    "_enabled_note": "\u2190 Set to true to enable P2P large-file direct transfer. Requires Tailscale installed and running.",
+    "_tailscale_setup": "Install: curl -fsSL https://tailscale.com/install.sh | sh  \u2502  Join: sudo tailscale up  \u2502  Verify: tailscale ip -4  \u2502  Download client: https://login.tailscale.com/download",
+    "port": 8090,
+    "tailscaleIp": "",
+    "_tailscaleIp_note": "\u2190 Leave empty for auto-detection from tailscale0 interface. Override with static IP if auto-detection fails.",
+    "tokenTtlHours": 24,
+    "maxFileSizeMb": 500,
+    "storageDir": "",
+    "cleanupIntervalHours": 6,
+    "maxConcurrentDownloads": 5,
+    "channelThresholds": {
+      "telegram": 800000,
+      "discord": 800000,
+      "qq": 800000,
+      "whatsapp": 800000,
+      "feishu": 800000,
+      "email": 800000,
+      "default": 800000
+    }
   }
 }

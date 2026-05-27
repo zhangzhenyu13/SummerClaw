@@ -7,6 +7,7 @@ Currently, SummerClaw is prime with the following key features:
 - **DAG-Based Subagent Pools** — Directed Acyclic Graph scheduling with configurable recursion depths.
 - **ReAct Worker & Re-planner** — Self-improves the planner DAG based on environment feedback.
 - **[Enhanced Memory Consolidation & Auto-Skill Learning](docs/MEMORY.md)** — Pluggable memory algorithms (naive / Layerga / EMem / Nemori / Mem0V3 / Supermemory / Hindsight / MastraOM) with automatic skill distillation inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+- **[Pluggable Agent Trainer](docs/AGENT_TRAINER.md)** — Zero-intrusion skill optimization framework with 6-stage pipeline (Rollout → Reflect → Aggregate → Select → Update → Evaluate); start via `/train <algorithm>` from any channel with Gradio dashboard monitoring.
 
 ## Architecture
 
@@ -44,6 +45,11 @@ Currently, SummerClaw is prime with the following key features:
    │     Dream:  cron 2h · /dream  →  dreamed-* skills              │
    │     Hermes: ×10 calls · /skill-autogen  →  hermes-* skills    │
    │     ↑  Skills fed back into ① Tool Pool                        │
+   ├─────────────────────────────────────────────────────────────────┤
+   │  ⑨  Agent Trainer Layer                               ★ NEW    │
+   │     Pluggable Algorithms (SkillOpt) · 6-Stage Pipeline         │
+   │     /train <alg> → Dashboard · Accept/Reject Gate              │
+   │     ↑  Optimized skills deployable back to ⑧                  │
    ╚═════════════════════════════════════════════════════════════════╝
 ```
 
@@ -144,6 +150,39 @@ Watches tool-call history and distills recurring patterns into reusable skills p
 > **Note:** All channel notifications are routed to the last active session.
 > Silent (log-only) when no active session exists.
 
+## Agent Trainer
+
+SummerClaw includes a **zero-intrusion, pluggable skill optimization framework** that iteratively improves agent skills via a 6-stage per-step pipeline while keeping the online agent running normally.
+
+### SkillOpt Algorithm
+
+The currently implemented algorithm uses reflection-based optimization:
+
+| Stage | Name | Description |
+|-------|------|-------------|
+| ① | **Rollout** | Execute episodes with current skill via isolated AgentRunner |
+| ② | **Reflect** | Minibatch trajectory analysis (failure/success) → structured patches |
+| ③ | **Aggregate** | Hierarchical LLM-driven patch merging (failure-first priority) |
+| ④ | **Select** | Rank edits by importance, keep top-L (gradient clipping) |
+| ⑤ | **Update** | Apply edits to skill document (append/insert_after/replace/delete) |
+| ⑥ | **Evaluate** | Validation gate — accept_new_best / accept / reject |
+
+**Key design principles:**
+- **Data isolation** — Training uses `train-outputs/<alg>-<task>/` with its own memory, session, and output files
+- **Runtime consistency** — Same tools, memory algorithm type, and model config as the online agent
+- **Zero intrusion** — No modifications to existing agent core files
+- **Channel-driven** — Start via `/train <algorithm>` from any channel
+
+| Command | Description |
+|---------|-------------|
+| `/train <algorithm>` | Start training (returns Gradio dashboard URL) |
+| `/train` | List available algorithms |
+| `/train_status` | Show active training sessions |
+| `/train_stop <algorithm>` | Cancel a running training |
+
+See the **[Agent Trainer Documentation](docs/AGENT_TRAINER.md)** for algorithm principles, pipeline details, and extension guide.
+See the **[Agent Trainer Module Info](summerclaw/agent_trainer/INFO.md)** for module design, type system, and file index.
+
 ## Task Persistence
 
 | Command | Description |
@@ -162,6 +201,7 @@ Watches tool-call history and distills recurring patterns into reusable skills p
 
 - [Tools — Available Tools & Configuration](docs/TOOLS.md)
 - [Memory — Algorithms & Storage](docs/MEMORY.md)
+- [Agent Trainer — Skill Optimization & Algorithms](docs/AGENT_TRAINER.md)
 - [SummerClaw Extended Docs](summerclaw.md)
 - [Upstream SummerClaw](https://github.com/HKUDS/summerclaw)
 
@@ -215,3 +255,16 @@ All keys below live under `agents.defaults` unless noted otherwise.
 | `skill_autogen.enable` | bool | `false` | Enable Hermes-Autogen; **disabled by default** — must opt in explicitly |
 | `skill_autogen.nudge_interval` | int | `10` | Tool-call count threshold that triggers a background distillation run |
 | `skill_autogen.max_iterations` | int | `8` | Max LLM iterations allowed inside a single Hermes-Autogen run |
+
+### Agent Trainer  *(⑨ Pluggable Skill Optimization)*
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `trainer.num_epochs` | int | `3` | Number of training epochs |
+| `trainer.batch_size` | int | `5` | Training items per batch |
+| `trainer.edit_budget` | int | `4` | Max edits per step (learning rate L) |
+| `trainer.minibatch_size` | int | `5` | Trajectories per reflect minibatch (M) |
+| `trainer.workers` | int | `4` | Max concurrent rollout / LLM calls |
+| `trainer.seed` | int | `42` | Random seed for data shuffling |
+| `trainer.dashboard_port` | int | `7860` | Gradio dashboard port |
+| `trainer.dashboard_share` | bool | `true` | Generate public Gradio share link |

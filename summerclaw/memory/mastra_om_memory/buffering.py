@@ -358,8 +358,11 @@ async def async_buffer_observe(
     )
 
     try:
+        # Track cursor range for history_cursor indexing
+        cursor_before = consolidator.store._next_cursor()
+
         # Write raw messages to history.jsonl for Dream analysis
-        consolidator.store.append_history(
+        cursor_after = consolidator.store.append_history(
             consolidator.store._format_messages(messages)
         )
 
@@ -411,6 +414,10 @@ async def async_buffer_observe(
             token_count=message_tokens,
             timestamp=started_at,
         )
+
+        # Store cursor range for later activation (history_cursor indexing)
+        chunk._history_cursor_start = cursor_before
+        chunk._history_cursor_end = cursor_after
 
         logger.info(
             "[OM:buffer] async observation complete: cycle={}, msgs={}, obs_chars={}",
@@ -466,8 +473,20 @@ async def activate_buffered_observations(
     if not combined.strip():
         return None
 
-    # Append to observation log
-    consolidator.store.append_observations(combined)
+    # Compute combined history_cursor range across all chunks
+    cursor_starts = [getattr(c, '_history_cursor_start', None) for c in chunks]
+    cursor_ends = [getattr(c, '_history_cursor_end', None) for c in chunks]
+    valid_starts = [s for s in cursor_starts if s is not None]
+    valid_ends = [e for e in cursor_ends if e is not None]
+    combined_cursor_start = min(valid_starts) if valid_starts else None
+    combined_cursor_end = max(valid_ends) if valid_ends else None
+
+    # Append to observation log with combined history_cursor range
+    consolidator.store.append_observations(
+        combined,
+        history_cursor_start=combined_cursor_start,
+        history_cursor_end=combined_cursor_end,
+    )
     consolidator.store.append_om_ops(
         f"[OM-BUFFER-ACTIVATED] {len(chunks)} buffered chunks → "
         f"{len(combined)} chars of observations"

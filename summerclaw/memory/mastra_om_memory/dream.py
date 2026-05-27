@@ -1,11 +1,15 @@
 """MastraOM Dream — cron-scheduled deep memory processing using Observer/Reflector.
 
 Two-phase memory processor adapted from naive Dream:
-Phase 1: Analyze raw history.jsonl + OBSERVATIONS.md via Observer
+Phase 1: Analyze OBSERVATIONS.md + MEMORY.md/SOUL.md/USER.md via Observer-style prompt
 Phase 2: Edit MEMORY.md, SOUL.md, USER.md via AgentRunner (with Reflector guidance)
 
+Dream is triggered when the Reflector condenses observations (generation increments).
+It analyzes the distilled observation records and memory files to extract new facts,
+deduplicate, and create skills — NOT raw session logs.
+
 The Dream also supports skill creation (dreamed-* skills) when it detects
-repeated workflows in the conversation history.
+repeated workflows in the observation records.
 """
 
 from __future__ import annotations
@@ -28,15 +32,15 @@ _STALE_THRESHOLD_DAYS = 14
 
 
 class MastraOMDream:
-    """Two-phase memory processor: analyze + edit via AgentRunner.
+    """Two-phase memory processor: analyze obs + edit via AgentRunner.
 
     Uses MastraOM's Observer/Reflector pipeline for offline deep processing:
 
     Phase 1 (Analyze):
-        Reads **raw** history.jsonl entries + current OBSERVATIONS.md, sends to
-        an analysis LLM (using Observer-style prompt) to identify what should change.
-        Raw history provides full conversation context; observations provide the
-        Observer's distilled understanding.
+        Reads OBSERVATIONS.md (distilled observation records) + current
+        MEMORY.md, SOUL.md, USER.md. Sends to an analysis LLM (using
+        Observer-style prompt) to identify what should change.
+        Triggered when generation count increases (Reflector ran).
 
     Phase 2 (Edit):
         Delegates to AgentRunner with read_file/edit_file tools to make
@@ -49,7 +53,6 @@ class MastraOMDream:
         store: MastraOMStore,
         provider: "LLMProvider",
         model: str,
-        max_batch_size: int = 20,
         max_iterations: int = 10,
         max_tool_result_chars: int = 16_000,
         annotate_line_ages: bool = True,
@@ -58,7 +61,6 @@ class MastraOMDream:
         self.store = store
         self.provider = provider
         self.model = model
-        self.max_batch_size = max_batch_size
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.annotate_line_ages = annotate_line_ages
@@ -160,23 +162,22 @@ class MastraOMDream:
     # -- main entry ----------------------------------------------------------
 
     async def run(self) -> bool:
-        """Process unprocessed history entries. Returns True if work was done."""
+        """Process new observations if generation has advanced. Returns True if work was done.
+
+        Trigger: Reflector condensation increments generation count.
+        Input: OBSERVATIONS.md (distilled records) + memory files.
+        """
         from summerclaw.agent.skills import BUILTIN_SKILLS_DIR
 
-        last_cursor = self.store.get_last_dream_cursor()
-        entries = self.store.read_unprocessed_history(since_cursor=last_cursor)
-        if not entries:
+        # Check if generation has advanced since last Dream run
+        current_gen = self.store.get_generation_count()
+        last_dream_gen = self.store.get_last_dream_generation()
+        if current_gen <= last_dream_gen:
             return False
 
-        batch = entries[:self.max_batch_size]
         logger.info(
-            "MastraOM Dream: processing {} entries (cursor {}→{}), batch={}",
-            len(entries), last_cursor, batch[-1]["cursor"], len(batch),
-        )
-
-        # Build history text for LLM
-        history_text = "\n".join(
-            f"[{e['timestamp']}] {e['content']}" for e in batch
+            "MastraOM Dream: generation advanced {} → {}, processing",
+            last_dream_gen, current_gen,
         )
 
         # Current file contents + line age annotations
@@ -190,7 +191,7 @@ class MastraOMDream:
         current_soul = self.store.read_soul() or "(empty)"
         current_user = self.store.read_user() or "(empty)"
 
-        # Observations as message-like records (same format as get_memory_context())
+        # Observations as message-like records (distilled from OBSERVATIONS.md)
         raw_obs = self.store.read_observations()
         obs_records = self.store._observations_as_records(raw_obs) if raw_obs else ""
 
@@ -204,7 +205,7 @@ class MastraOMDream:
         file_context_parts = [f"## Current Date\n{current_date}"]
         if obs_records:
             file_context_parts.append(
-                f"## Past Conversation Records (higher priority)\n{obs_records}"
+                f"## Observation Records (distilled from past conversations)\n{obs_records}"
             )
         file_context_parts.append(
             f"## Current MEMORY.md ({len(current_memory)} chars)\n{current_memory}"
@@ -218,9 +219,7 @@ class MastraOMDream:
         file_context = "\n\n".join(file_context_parts)
 
         # Phase 1: Analyze
-        phase1_prompt = (
-            f"## Conversation History\n{history_text}\n\n{file_context}"
-        )
+        phase1_prompt = file_context
 
         try:
             phase1_response = await self.provider.chat_with_retry(
@@ -305,27 +304,24 @@ class MastraOMDream:
                 if event["status"] == "ok":
                     changelog.append(f"{event['name']}: {event['detail']}")
 
-        # Advance cursor
-        new_cursor = batch[-1]["cursor"]
-        self.store.set_last_dream_cursor(new_cursor)
-        self.store.compact_history()
+        # Advance generation cursor
+        self.store.set_last_dream_generation(current_gen)
 
         if result and result.stop_reason == "completed":
             logger.info(
-                "MastraOM Dream done: {} change(s), cursor advanced to {}",
-                len(changelog), new_cursor,
+                "MastraOM Dream done: {} change(s), generation advanced to {}",
+                len(changelog), current_gen,
             )
         else:
             reason = result.stop_reason if result else "exception"
             logger.warning(
-                "MastraOM Dream incomplete ({}): cursor advanced to {}",
-                reason, new_cursor,
+                "MastraOM Dream incomplete ({}): generation marked as {}",
+                reason, current_gen,
             )
 
         # Git auto-commit
         if changelog and self.store.git.is_initialized():
-            ts = batch[-1]["timestamp"]
-            summary = f"dream: {ts}, {len(changelog)} change(s)"
+            summary = f"dream: gen={current_gen}, {len(changelog)} change(s)"
             commit_msg = f"{summary}\n\n{analysis.strip()}"
             sha = self.store.git.auto_commit(commit_msg)
             if sha:

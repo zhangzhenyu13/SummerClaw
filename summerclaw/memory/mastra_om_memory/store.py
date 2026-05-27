@@ -35,7 +35,8 @@ class MastraOMStore:
     - memory/om-ops.jsonl      — OM operation log (summary entries)
     - SOUL.md / USER.md        — persona files
     - memory/.cursor           — history cursor
-    - memory/.dream_cursor     — Dream processing cursor
+    - memory/.dream_cursor     — Dream processing cursor (legacy)
+    - memory/.dream_generation — Dream last-processed generation
     - memory/.obs_cursor       — observation processing cursor
     """
 
@@ -54,7 +55,6 @@ class MastraOMStore:
     ):
         self.workspace = workspace
         self.max_history_entries = max_history_entries
-
         if algo_name:
             self._algo_name = algo_name
             self.memory_dir = ensure_dir(workspace / "memory" / algo_name)
@@ -77,6 +77,7 @@ class MastraOMStore:
         self._dream_cursor_file = self.memory_dir / ".dream_cursor"
         self._obs_cursor_file = self.memory_dir / ".obs_cursor"
         self._generation_file = self.memory_dir / ".om_generation"
+        self._dream_gen_file = self.memory_dir / ".dream_generation"
         self._git = GitStore(
             workspace,
             tracked_files=[
@@ -259,8 +260,20 @@ class MastraOMStore:
         self.observations_file.write_text(content, encoding="utf-8")
         logger.debug("[OM:store] wrote {} chars to OBSERVATIONS.md", len(content))
 
-    def append_observations(self, new_observations: str, cycle_id: str | None = None) -> str:
+    def append_observations(
+        self,
+        new_observations: str,
+        cycle_id: str | None = None,
+        history_cursor_start: int | None = None,
+        history_cursor_end: int | None = None,
+    ) -> str:
         """Append new observations to the observation log.
+
+        Args:
+            new_observations: Observation text to append.
+            cycle_id: Optional cycle identifier. Generated if not provided.
+            history_cursor_start: Start cursor in history.jsonl for this cycle.
+            history_cursor_end: End cursor in history.jsonl for this cycle.
 
         Returns the cycle_id used (generated if not provided).
         """
@@ -268,7 +281,13 @@ class MastraOMStore:
         existing = self.read_observations()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        header = f"\n\n## Observation Cycle {cycle_id[:8]} — {ts}\n"
+        # Embed history_cursor range in cycle header for internal auto-recall
+        cursor_attr = ""
+        if history_cursor_start is not None:
+            cursor_end = history_cursor_end or history_cursor_start
+            cursor_attr = f' history_cursor="{history_cursor_start}:{cursor_end}"'
+
+        header = f"\n\n## Observation Cycle {cycle_id[:8]} — {ts}{cursor_attr}\n"
         new_block = header + new_observations.strip()
 
         if existing.strip():
@@ -340,12 +359,11 @@ class MastraOMStore:
     # -- context injection (used by context.py) ------------------------------
 
     def get_memory_context(self) -> str:
-        """Return observations + MEMORY.md as combined message context.
+        """Return observations + MEMORY.md as memory context.
 
-        Observations are presented as message-like records rather than an opaque
-        block. This allows any consumer (Dream, AgentLoop context, etc.) to
-        treat observations as part of the message stream without knowing about
-        the Observer/Reflector internals.
+        Only observations and long-term memory are injected into the agent
+        context. Raw history (history.jsonl) is NEVER loaded into context —
+        it exists solely for Dream's internal analysis pipeline.
         """
         observations = self.read_observations()
         long_term = self.read_memory()
@@ -367,7 +385,8 @@ class MastraOMStore:
         combined = "\n\n".join(parts) if parts else ""
         if combined:
             logger.info(
-                "[OM:context] injecting memory context: {} chars (obs={} chars, MEMORY.md={} chars, gen={})",
+                "[OM:context] injecting memory context: {} chars (obs={} chars, "
+                "MEMORY.md={} chars, gen={})",
                 len(combined),
                 len(observations) if observations else 0,
                 len(long_term) if long_term else 0,
@@ -434,7 +453,20 @@ class MastraOMStore:
         return 1
 
     def read_unprocessed_history(self, since_cursor: int) -> list[dict[str, Any]]:
-        """Return history entries with cursor > *since_cursor*."""
+        """Return empty list — mastra_om never injects raw history into context.
+
+        Prevents ContextBuilder from injecting history.jsonl content into the
+        system prompt. Raw history exists solely for Dream's analysis pipeline.
+        """
+        return []
+
+    def read_history_since(self, since_cursor: int) -> list[dict[str, Any]]:
+        """Return history entries with cursor > *since_cursor* (for Dream).
+
+        Unlike read_unprocessed_history (which returns [] to prevent ContextBuilder
+        injection), this method actually reads history.jsonl. Used exclusively
+        by Dream for deep analysis of raw conversation logs.
+        """
         return [e for e in self._read_entries() if e.get("cursor", 0) > since_cursor]
 
     def compact_history(self) -> None:
@@ -522,7 +554,7 @@ class MastraOMStore:
             pass
         return entries
 
-    # -- dream cursor --------------------------------------------------------
+    # -- dream cursor / generation -------------------------------------------
 
     def get_last_dream_cursor(self) -> int:
         if self._dream_cursor_file.exists():
@@ -534,6 +566,19 @@ class MastraOMStore:
 
     def set_last_dream_cursor(self, cursor: int) -> None:
         self._dream_cursor_file.write_text(str(cursor), encoding="utf-8")
+
+    def get_last_dream_generation(self) -> int:
+        """Return the generation count when Dream last ran."""
+        if self._dream_gen_file.exists():
+            try:
+                return int(self._dream_gen_file.read_text(encoding="utf-8").strip())
+            except (ValueError, OSError):
+                pass
+        return 0
+
+    def set_last_dream_generation(self, gen: int) -> None:
+        """Record that Dream has processed up to this generation."""
+        self._dream_gen_file.write_text(str(gen), encoding="utf-8")
 
     # -- observation cursor --------------------------------------------------
 
@@ -576,3 +621,5 @@ class MastraOMStore:
         logger.warning(
             "MastraOM consolidation degraded: raw-archived {} messages", len(messages)
         )
+
+

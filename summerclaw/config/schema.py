@@ -298,6 +298,7 @@ class GatewayConfig(Base):
 
     host: str = "127.0.0.1"  # Safer default: local-only bind.
     port: int = 18790
+    dashboard_port: int = 7860  # Training dashboard port (Gradio WebUI).
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
@@ -437,6 +438,30 @@ class MyToolConfig(Base):
     allow_set: bool = False  # let `my` modify loop state (read-only if False)
 
 
+class FileLinkerConfig(Base):
+    """FileLinker P2P large-file direct-transfer configuration."""
+
+    enabled: bool = False
+    port: int = 8090
+    tailscale_ip: str = ""  # empty = auto-detect
+    token_ttl_hours: int = Field(default=24, ge=1, le=168)
+    max_file_size_mb: int = Field(default=500, ge=1)
+    storage_dir: str = ""  # empty = workspace/filelinker_storage/
+    cleanup_interval_hours: int = Field(default=6, ge=1)
+    max_concurrent_downloads: int = Field(default=5, ge=1)
+    channel_thresholds: dict[str, int] = Field(
+        default_factory=lambda: {
+            "telegram": 800_000,
+            "discord":  800_000,
+            "qq":       800_000,
+            "whatsapp": 800_000,
+            "feishu":   800_000,
+            "email":    800_000,
+            "default":  800_000,
+        }
+    )
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
@@ -459,6 +484,7 @@ class Config(BaseSettings):
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     proxy_pool: ProxyPoolConfig = Field(default_factory=ProxyPoolConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    file_linker: FileLinkerConfig = Field(default_factory=FileLinkerConfig)
 
     @property
     def workspace_path(self) -> Path:

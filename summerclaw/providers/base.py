@@ -1,8 +1,11 @@
 """Base LLM provider interface."""
 
 import asyncio
+import itertools
 import json
+import os
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
@@ -172,7 +175,15 @@ class LLMProvider(ABC):
         Returns ``None`` when ``max_concurrency <= 0`` (unlimited).
         The semaphore is created lazily on first access so that
         ``max_concurrency`` can be changed after construction.
+
+        When ``SUMMERCLAW_DEBUG_LLM=1``, forces concurrency to 1 so that
+        requests are serialized and easier to trace in logs.
         """
+        if os.environ.get("SUMMERCLAW_DEBUG_LLM"):
+            if self._concurrency_semaphore is None or self.max_concurrency != 1:
+                self.max_concurrency = 1
+                self._concurrency_semaphore = asyncio.Semaphore(1)
+            return self._concurrency_semaphore
         if self.max_concurrency <= 0:
             return None
         if self._concurrency_semaphore is None:
@@ -491,16 +502,178 @@ class LLMProvider(ABC):
                         found = True
         return found
 
+    # ── Debug logging helpers ──────────────────────────────────────────
+
+    _llm_debug_counter = itertools.count(1)
+
+    @staticmethod
+    def _debug_log_request(req_num: int, kwargs: dict[str, Any]) -> None:
+        """Log outgoing LLM request messages (SUMMERCLAW_DEBUG_LLM=1)."""
+        model = kwargs.get("model", "?")
+        messages = kwargs.get("messages", [])
+        tools = kwargs.get("tools")
+        max_tokens = kwargs.get("max_tokens", "?")
+        temperature = kwargs.get("temperature", "?")
+        reasoning_effort = kwargs.get("reasoning_effort", None)
+        tool_choice = kwargs.get("tool_choice", None)
+        sep = "=" * 80
+        print(f"\n{sep}")
+        print(f"[DEBUG LLM #{req_num}] REQUEST  | model={model} | {len(messages)} messages")
+        print(f"[DEBUG LLM #{req_num}]   max_tokens={max_tokens} | temperature={temperature} | "
+              f"reasoning_effort={reasoning_effort} | tool_choice={tool_choice}")
+        print(sep)
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                print(f"  [{i}] {role} ({len(content)} chars):")
+                print(f"      {content[:2000]}")
+            elif isinstance(content, list):
+                text = "; ".join(
+                    p.get("text", "")[:200] for p in content if isinstance(p, dict) and p.get("text")
+                )
+                print(f"  [{i}] {role} (list, {len(content)} parts): {text[:2000]}")
+            if msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    fn = tc.get("function", {})
+                    print(f"      tool_call: {fn.get('name', '?')}({fn.get('arguments', '')})")
+        if tools:
+            tool_names = [t.get("function", {}).get("name", "?") for t in tools[:10]]
+            print(f"  tools ({len(tools)}): {tool_names}")
+        print(sep)
+        # Flush immediately so logs appear even if the process hangs
+        import sys
+        sys.stdout.flush()
+
+    @staticmethod
+    def _debug_log_response(req_num: int, response: "LLMResponse", elapsed: float) -> None:
+        """Log LLM response content (SUMMERCLAW_DEBUG_LLM=1)."""
+        sep = "-" * 80
+        print(f"[DEBUG LLM #{req_num}] RESPONSE | finish={response.finish_reason} | total {elapsed:.1f}s")
+        print(sep)
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                print(f"  tool_call: {tc.name}({json.dumps(tc.arguments, ensure_ascii=False)[:500]})")
+        if response.usage:
+            print(f"  usage: {response.usage}")
+        # Full content already streamed in real-time, just show final length
+        if response.content:
+            print(f"  final_content ({len(response.content)} chars): {response.content[:200]}{'...' if len(response.content) > 200 else ''}")
+        print(f"{'=' * 80}\n")
+        import sys
+        sys.stdout.flush()
+
+    @staticmethod
+    def _debug_make_stream_printer(req_num: int) -> Callable[[str], Awaitable[None]]:
+        """Create an ``on_content_delta`` callback that prints chunks live.
+
+        Also prints a 'still streaming' heartbeat every 10 seconds so you can
+        tell the request is alive even during long reasoning/thinking phases.
+        """
+        state: dict[str, Any] = {
+            "chars": 0,
+            "first_chunk_time": None,
+            "last_heartbeat": None,
+        }
+
+        async def _printer(delta: str) -> None:
+            import sys
+            now = time.monotonic()
+            # First-chunk marker
+            if state["first_chunk_time"] is None:
+                state["first_chunk_time"] = now
+                state["last_heartbeat"] = now
+                print(f"[DEBUG LLM #{req_num}] STREAM >>> (first chunk)", flush=True)
+            # Print the chunk inline
+            print(delta, end="", flush=True)
+            state["chars"] += len(delta)
+            state["last_heartbeat"] = now
+
+        return _printer
+
+    @staticmethod
+    async def _debug_heartbeat(req_num: int, t0: float) -> None:
+        """Print a heartbeat every 15s while waiting for LLM response."""
+        import sys
+        while True:
+            await asyncio.sleep(15)
+            elapsed = time.monotonic() - t0
+            print(
+                f"\n[DEBUG LLM #{req_num}] ⏳ still waiting... ({elapsed:.0f}s elapsed)",
+                flush=True,
+            )
+            sys.stdout.flush()
+
+    # Keys from _build_request_kwargs that are NOT accepted by chat()/chat_stream()
+    _RETRY_ONLY_KEYS = frozenset({"retry_mode", "on_retry_wait"})
+
+    # Default per-request timeout for non-streaming chat() calls.
+    # Prevents indefinite hangs when the provider accepts the connection
+    # but never responds (common with thinking models on DashScope).
+    _CHAT_REQUEST_TIMEOUT_S = int(os.environ.get(
+        "SUMMERCLAW_CHAT_TIMEOUT_S", "300",
+    ))
+
     async def _safe_chat(self, **kwargs: Any) -> LLMResponse:
-        """Call chat() and convert unexpected exceptions to error responses."""
+        """Call chat() and convert unexpected exceptions to error responses.
+
+        Every ``chat()`` call is wrapped in ``asyncio.wait_for`` with a
+        configurable timeout (default 300s, override via
+        ``SUMMERCLAW_CHAT_TIMEOUT_S``) so a single hung request cannot
+        block the entire agent loop indefinitely.
+
+        In debug mode (``SUMMERCLAW_DEBUG_LLM=1``), logs request/response
+        details and runs a background heartbeat every 15s.
+        """
         sem = self._get_concurrency_semaphore()
         async with (sem or nullcontext()):
+            debug = os.environ.get("SUMMERCLAW_DEBUG_LLM")
+            req_num = 0
+            t0 = time.monotonic()
+            heartbeat_task: asyncio.Task | None = None
+            timeout_s = self._CHAT_REQUEST_TIMEOUT_S
+            if debug:
+                req_num = next(LLMProvider._llm_debug_counter)
+                self._debug_log_request(req_num, kwargs)
+                print(f"[DEBUG LLM #{req_num}] chat() timeout={timeout_s}s", flush=True)
+                # ── Background heartbeat ─────────────────────────────
+                heartbeat_task = asyncio.create_task(
+                    self._debug_heartbeat(req_num, t0)
+                )
             try:
-                return await self.chat(**kwargs)
+                # Filter out retry-only keys — chat() does not accept them
+                # (they are consumed by chat_with_retry / _run_with_retry)
+                chat_kwargs = {
+                    k: v for k, v in kwargs.items()
+                    if k not in self._RETRY_ONLY_KEYS
+                }
+                result = await asyncio.wait_for(
+                    self.chat(**chat_kwargs),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                elapsed = time.monotonic() - t0
+                err_msg = (
+                    f"chat() timed out after {elapsed:.0f}s "
+                    f"(limit={timeout_s}s, model={kwargs.get('model', '?')})"
+                )
+                if debug:
+                    print(f"\n[DEBUG LLM #{req_num}] TIMEOUT: {err_msg}", flush=True)
+                result = LLMResponse(content=err_msg, finish_reason="error")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+                result = LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+            finally:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
+            if debug:
+                self._debug_log_response(req_num, result, time.monotonic() - t0)
+            return result
 
     async def chat_stream(
         self,
@@ -530,15 +703,59 @@ class LLMProvider(ABC):
         return response
 
     async def _safe_chat_stream(self, **kwargs: Any) -> LLMResponse:
-        """Call chat_stream() and convert unexpected exceptions to error responses."""
+        """Call chat_stream() and convert unexpected exceptions to error responses.
+
+        In debug mode, wraps ``on_content_delta`` so each chunk is also printed
+        to stdout with timing info.  A background heartbeat prints every 15s.
+        """
         sem = self._get_concurrency_semaphore()
         async with (sem or nullcontext()):
+            debug = os.environ.get("SUMMERCLAW_DEBUG_LLM")
+            req_num = 0
+            t0 = time.monotonic()
+            heartbeat_task: asyncio.Task | None = None
+            # ── Filter retry-only keys (same as _safe_chat) ─────────
+            # chat_stream() does not accept retry_mode / on_retry_wait;
+            # they are consumed by chat_stream_with_retry / _run_with_retry.
+            stream_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in self._RETRY_ONLY_KEYS
+            }
+            if debug:
+                req_num = next(LLMProvider._llm_debug_counter)
+                self._debug_log_request(req_num, stream_kwargs)
+                # Wrap on_content_delta to also print chunks live
+                original_delta = stream_kwargs.get("on_content_delta")
+                debug_printer = self._debug_make_stream_printer(req_num)
+
+                async def _combined_delta(delta: str) -> None:
+                    await debug_printer(delta)
+                    if original_delta:
+                        await original_delta(delta)
+
+                stream_kwargs = dict(stream_kwargs)
+                stream_kwargs["on_content_delta"] = _combined_delta
+                # ── Background heartbeat ─────────────────────────────
+                heartbeat_task = asyncio.create_task(
+                    self._debug_heartbeat(req_num, t0)
+                )
             try:
-                return await self.chat_stream(**kwargs)
+                result = await self.chat_stream(**stream_kwargs)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                return LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+                result = LLMResponse(content=f"Error calling LLM: {exc}", finish_reason="error")
+            finally:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
+            if debug:
+                print()  # newline after streamed output
+                self._debug_log_response(req_num, result, time.monotonic() - t0)
+            return result
 
     async def chat_stream_with_retry(
         self,

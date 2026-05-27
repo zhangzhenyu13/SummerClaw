@@ -37,7 +37,6 @@ def dream(store, mock_provider, mock_runner):
         store=store,
         provider=mock_provider,
         model="test-model",
-        max_batch_size=5,
     )
     d._runner = mock_runner
     return d
@@ -59,15 +58,30 @@ def _make_run_result(
     )
 
 
+def _advance_generation(store):
+    """Helper: increment generation to trigger Dream."""
+    store.increment_generation()
+
+
 class TestDreamRun:
-    async def test_noop_when_no_unprocessed_history(self, dream, mock_provider, mock_runner, store):
+    async def test_noop_when_no_new_generation(self, dream, mock_provider, mock_runner, store):
+        """Dream should not run when generation hasn't advanced."""
         result = await dream.run()
         assert result is False
         mock_provider.chat_with_retry.assert_not_called()
         mock_runner.run.assert_not_called()
 
-    async def test_calls_runner_for_unprocessed_entries(self, dream, mock_provider, mock_runner, store):
-        store.append_history("User prefers dark mode")
+    async def test_noop_when_generation_already_processed(self, dream, mock_provider, mock_runner, store):
+        """Dream should not run again for the same generation."""
+        _advance_generation(store)
+        store.set_last_dream_generation(store.get_generation_count())
+        result = await dream.run()
+        assert result is False
+        mock_provider.chat_with_retry.assert_not_called()
+
+    async def test_calls_runner_for_new_generation(self, dream, mock_provider, mock_runner, store):
+        """Dream should run when generation has advanced."""
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="New observation fact")
         mock_runner.run = AsyncMock(return_value=_make_run_result(
             tool_events=[{"name": "edit_file", "status": "ok", "detail": "memory/MEMORY.md"}],
@@ -79,27 +93,17 @@ class TestDreamRun:
         assert spec.max_iterations == 10
         assert spec.fail_on_tool_error is False
 
-    async def test_advances_dream_cursor(self, dream, mock_provider, mock_runner, store):
-        store.append_history("event 1")
-        store.append_history("event 2")
+    async def test_advances_dream_generation(self, dream, mock_provider, mock_runner, store):
+        """Dream should record the generation it processed."""
+        _advance_generation(store)
+        _advance_generation(store)  # gen = 2
         mock_provider.chat_with_retry.return_value = MagicMock(content="Nothing new")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
         await dream.run()
-        assert store.get_last_dream_cursor() == 2
-
-    async def test_compacts_processed_history(self, dream, mock_provider, mock_runner, store):
-        store.append_history("event 1")
-        store.append_history("event 2")
-        store.append_history("event 3")
-        mock_provider.chat_with_retry.return_value = MagicMock(content="Nothing new")
-        mock_runner.run = AsyncMock(return_value=_make_run_result())
-        await dream.run()
-        entries = store.read_unprocessed_history(since_cursor=0)
-        assert all(e["cursor"] > 0 for e in entries)
+        assert store.get_last_dream_generation() == 2
 
     async def test_skill_phase_uses_builtin_skill_creator_path(self, dream, mock_provider, mock_runner, store):
-        store.append_history("Repeated workflow one")
-        store.append_history("Repeated workflow two")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKILL] test-skill: test description")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -122,7 +126,7 @@ class TestDreamRun:
         assert (store.workspace / "skills" / "dreamed--mastra_om_memory-test-skill" / "SKILL.md").exists()
 
     async def test_phase1_prompt_includes_line_age_annotations(self, dream, mock_provider, mock_runner, store):
-        store.append_history("some event")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -137,7 +141,7 @@ class TestDreamRun:
         assert "## Current MEMORY.md" in user_msg
 
     async def test_phase1_annotates_only_memory_not_soul_or_user(self, dream, mock_provider, mock_runner, store):
-        store.append_history("some event")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -150,12 +154,12 @@ class TestDreamRun:
         messages = call_args.kwargs.get("messages", call_args[1].get("messages"))
         user_msg = messages[1]["content"] if len(messages) > 1 else messages[0]["content"]
         soul_section = user_msg.split("## Current SOUL.md")[1].split("## Current USER.md")[0]
-        user_section = user_msg.split("## Current USER.md")[1].split("## Current OBSERVATIONS.md")[0]
+        user_section = user_msg.split("## Current USER.md")[1]
         assert "\u2190" not in soul_section
         assert "\u2190" not in user_section
 
     async def test_phase1_prompt_works_without_git(self, dream, mock_provider, mock_runner, store):
-        store.append_history("some event")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -171,7 +175,7 @@ class TestDreamRun:
         self, dream, mock_provider, mock_runner, store,
     ):
         store.write_memory("# Memory\n- Project X active\n- fresh item\n- edge case line")
-        store.append_history("some event")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -196,7 +200,7 @@ class TestDreamRun:
     async def test_phase1_skips_annotation_when_disabled(
         self, dream, mock_provider, mock_runner, store,
     ):
-        store.append_history("some event")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -213,7 +217,7 @@ class TestDreamRun:
     async def test_phase1_skips_annotation_on_line_ages_length_mismatch(
         self, dream, mock_provider, mock_runner, store,
     ):
-        store.append_history("some event")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -229,7 +233,7 @@ class TestDreamRun:
     async def test_phase1_prompt_uses_threshold_from_template_var(
         self, dream, mock_provider, mock_runner, store,
     ):
-        store.append_history("some event")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -241,20 +245,19 @@ class TestDreamRun:
         assert "N>14" in system_msg
 
     async def test_git_auto_commit_on_changes(self, dream, mock_provider, mock_runner, store):
-        store.append_history("event 1")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="Updated memory")
         mock_runner.run = AsyncMock(return_value=_make_run_result(
             tool_events=[{"name": "edit_file", "status": "ok", "detail": "memory/MEMORY.md"}],
         ))
         store.git.init()
         await dream.run()
-        # verify history was compacted
-        entries = store.read_unprocessed_history(since_cursor=0)
-        assert len(entries) >= 0  # at minimum, no crash
+        # Verify generation was recorded
+        assert store.get_last_dream_generation() == 1
 
     async def test_includes_observations_in_phase1_prompt(self, dream, mock_provider, mock_runner, store):
         store.write_observations("Date: May 9\n* 🔴 Test observation")
-        store.append_history("event 1")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -263,7 +266,7 @@ class TestDreamRun:
         call_args = mock_provider.chat_with_retry.call_args
         messages = call_args.kwargs.get("messages", call_args[1].get("messages"))
         user_msg = messages[1]["content"] if len(messages) > 1 else messages[0]["content"]
-        assert "Past Conversation Records" in user_msg
+        assert "Observation Records" in user_msg
         assert "Test observation" in user_msg
 
     async def test_includes_existing_skills_when_present(self, dream, mock_provider, mock_runner, store):
@@ -277,7 +280,7 @@ class TestDreamRun:
             encoding="utf-8",
         )
 
-        store.append_history("event 1")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
@@ -288,25 +291,22 @@ class TestDreamRun:
         assert "Existing Skills" in user_msg
         assert "test-skill" in user_msg
 
-    async def test_batch_size_limit(self, dream, mock_provider, mock_runner, store):
-        # Add more entries than max_batch_size
-        for i in range(10):
-            store.append_history(f"event {i}")
+    async def test_no_conversation_history_in_phase1_prompt(self, dream, mock_provider, mock_runner, store):
+        """Phase 1 prompt should NOT contain raw conversation history section."""
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="[SKIP]")
         mock_runner.run = AsyncMock(return_value=_make_run_result())
 
         await dream.run()
 
-        # Max 5 entries processed in batch
         call_args = mock_provider.chat_with_retry.call_args
         messages = call_args.kwargs.get("messages", call_args[1].get("messages"))
         user_msg = messages[1]["content"] if len(messages) > 1 else messages[0]["content"]
-        history_lines = user_msg.split("## Conversation History")[1].split("## Current Date")[0]
-        assert history_lines.count("event") == 5  # batch size
+        assert "Conversation History" not in user_msg
 
     async def test_incomplete_run_returns_true(self, dream, mock_provider, mock_runner, store):
         """Even when Phase 2 doesn't complete, should still return True."""
-        store.append_history("event 1")
+        _advance_generation(store)
         mock_provider.chat_with_retry.return_value = MagicMock(content="Analysis content")
         mock_runner.run = AsyncMock(return_value=_make_run_result(stop_reason="max_iterations"))
 

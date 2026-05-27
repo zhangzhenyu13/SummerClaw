@@ -789,6 +789,26 @@ def gateway(
     # Create channel manager
     channels = ChannelManager(config, bus)
 
+    # ── Initialize FileLinker P2P service (if enabled) ──
+    _filelinker_service = None
+    _filelinker_server = None
+    if getattr(config, "file_linker", None) and config.file_linker.enabled:
+        try:
+            from summerclaw.filelinker.service import FileLinkerService
+            from summerclaw.filelinker.server import FileLinkerHTTPServer
+            from summerclaw.filelinker.middleware import FileLinkerMiddleware
+
+            _filelinker_service = FileLinkerService(config.file_linker, config.workspace_path)
+            _filelinker_server = FileLinkerHTTPServer(_filelinker_service)
+            FileLinkerMiddleware.set_service(_filelinker_service)
+            console.print("[green]✓[/green] FileLinker: enabled (P2P large-file direct transfer)")
+        except ImportError as _fl_err:
+            console.print(f"[yellow]⚠[/yellow] FileLinker: dependencies missing ({_fl_err})")
+        except Exception as _fl_err:
+            console.print(f"[yellow]⚠[/yellow] FileLinker: init failed ({_fl_err})")
+    else:
+        console.print("[dim]  FileLinker: disabled (set fileLinker.enabled=true to enable)[/dim]")
+
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
         enabled = set(channels.enabled_channels)
@@ -970,6 +990,11 @@ def gateway(
         f"  Dream: {dream_cfg.describe_schedule()}",
         f"  Skill-Autogen: {'enabled' if skill_autogen_cfg.enable else 'disabled'}",
     ]
+    if _filelinker_service:
+        _fl_ip = _filelinker_service.tailscale_ip or "no-ip"
+        _startup_lines.append(f"  FileLinker: enabled ({_fl_ip}:{_filelinker_service.port})")
+    else:
+        _startup_lines.append("  FileLinker: disabled")
     if channels.enabled_channels:
         _startup_lines.append(f"  Channels: {', '.join(channels.enabled_channels)}")
     if _all_jobs:
@@ -982,10 +1007,83 @@ def gateway(
         _startup_lines.append(f"  Cron: {len(_all_jobs)} jobs — {', '.join(_job_summaries)}")
     _startup_summary = "\n".join(_startup_lines)
 
+    # ── Start the training dashboard (always) ─────────────────────────────────
+    _dashboard_started = False
+    try:
+        from summerclaw.agent_trainer.command import start_dashboard_from_agent
+        dashboard_url = start_dashboard_from_agent(
+            agent,
+            algorithm_name="skillopt",
+            dashboard_port=config.gateway.dashboard_port,
+            share=True,
+        )
+        if dashboard_url:
+            # URLs are already printed by the dashboard background thread
+            console.print(f"[green]\u2713[/green] Dashboard ready")
+            _dashboard_started = True
+            # Build startup lines for channel notification
+            _dash_info = None
+            try:
+                from summerclaw.agent_trainer.command import _get_gateway_dashboard_info
+                _dash_info = _get_gateway_dashboard_info()
+            except Exception:
+                pass
+            if _dash_info:
+                if _dash_info.get("local_url"):
+                    _startup_lines.append(f"  Dashboard local: {_dash_info['local_url']}")
+                if _dash_info.get("share_url"):
+                    _startup_lines.append(f"  Dashboard public: {_dash_info['share_url']}")
+            else:
+                _startup_lines.append(f"  Dashboard: {dashboard_url}")
+            _startup_summary = "\n".join(_startup_lines)
+        else:
+            console.print("[yellow]\u26a0[/yellow] Dashboard failed to start (see logs)")
+    except ImportError:
+        console.print("[yellow]\u26a0[/yellow] agent_trainer not available; skipping dashboard")
+    except Exception as exc:
+        console.print(f"[yellow]\u26a0[/yellow] Dashboard start failed: {exc}")
+
     async def run():
         try:
+            # Wire up training dashboard → channels notification callback
+            if _dashboard_started:
+                try:
+                    from summerclaw.agent_trainer.command import _ACTIVE_TRAININGS as _at
+                    for _sk, _si in _at.items():
+                        _si["notify_fn"] = channels.notify_startup
+                        _si["main_loop"] = asyncio.get_event_loop()
+                except Exception:
+                    pass
+
             await cron.start()
             await heartbeat.start()
+
+            # Start FileLinker service (token index load + cleanup loop + HTTP server)
+            _fl_tasks: list[asyncio.Task] = []
+            if _filelinker_service:
+                await _filelinker_service.start()
+                if _filelinker_service.tailscale_ip:
+                    _fl_tasks.append(asyncio.create_task(_filelinker_server.start()))
+                    console.print(
+                        f"[green]\u2713[/green] FileLinker HTTP: "
+                        f"http://{_filelinker_service.tailscale_ip}:{_filelinker_service.port}"
+                    )
+                else:
+                    console.print(
+                        "[yellow]\u26a0[/yellow] FileLinker: Tailscale IP not detected \u2014 "
+                        "HTTP server not started"
+                    )
+                    # Push channel notification warning that large-file P2P transfer is unavailable
+                    _fl_warn = (
+                        "\u26a0\ufe0f **FileLinker \u672a\u5c31\u7eea**\u2014\u2014Tailscale \u670d\u52a1\u672a\u68c0\u6d4b\u5230\uff0c"
+                        "P2P \u5927\u6587\u4ef6\u76f4\u4f20\u4e0d\u53ef\u7528\u3002\n"
+                        "\u8bf7\u5b89\u88c5\u5e76\u542f\u52a8 Tailscale\uff1ahttps://login.tailscale.com/download\uff0c"
+                        "\u7136\u540e\u91cd\u542f gateway\u3002"
+                    )
+                    try:
+                        await channels.notify_startup(_fl_warn)
+                    except Exception:
+                        logger.warning("Failed to push FileLinker unavailable notification to channels")
 
             # Schedule startup notification to channels (best-effort, non-blocking)
             async def _notify_startup():
@@ -1010,6 +1108,22 @@ def gateway(
             console.print("\n[red]Error: Gateway crashed unexpectedly[/red]")
             console.print(traceback.format_exc())
         finally:
+            # Stop dashboard if running
+            if _dashboard_started:
+                try:
+                    from summerclaw.agent_trainer.command import _ACTIVE_TRAININGS
+                    sess = _ACTIVE_TRAININGS.pop("train:skillopt:gateway", None)
+                    if sess and sess.get("dashboard"):
+                        sess["dashboard"].stop()
+                except Exception:
+                    pass
+            # Stop FileLinker
+            if _filelinker_server:
+                await _filelinker_server.stop()
+            for _t in _fl_tasks:
+                _t.cancel()
+            if _filelinker_service:
+                await _filelinker_service.stop()
             await agent.close_mcp()
             heartbeat.stop()
             cron.stop()

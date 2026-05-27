@@ -6,7 +6,9 @@ import asyncio
 from dataclasses import dataclass, field
 import inspect
 import json
+import os as _os
 from pathlib import Path
+import time as _time
 from typing import Any
 
 from loguru import logger
@@ -248,6 +250,13 @@ class AgentRunner:
         return injected_messages
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
+        _DBG = _os.environ.get("SUMMERCLAW_DEBUG_LLM")
+        _t_run_start = _time.monotonic()
+        if _DBG:
+            print(f"\n[RUNNER-DEBUG] AgentRunner.run() START | "
+                  f"messages={len(spec.initial_messages)} | "
+                  f"max_iterations={spec.max_iterations} | "
+                  f"model={spec.model} | session={spec.session_key}", flush=True)
         hook = spec.hook or AgentHook()
         messages = list(spec.initial_messages)
         final_content: str | None = None
@@ -263,6 +272,7 @@ class AgentRunner:
         injection_cycles = 0
 
         for iteration in range(spec.max_iterations):
+            _t_gov = _time.monotonic()
             try:
                 # Keep the persisted conversation untouched. Context governance
                 # may repair or compact historical messages for the model, but
@@ -288,9 +298,24 @@ class AgentRunner:
                     messages_for_model = self._backfill_missing_tool_results(messages_for_model)
                 except Exception:
                     messages_for_model = messages
+            if _DBG:
+                _gov_ms = (_time.monotonic() - _t_gov) * 1000
+                _tool_defs = spec.tools.get_definitions() if spec.tools else []
+                print(f"[RUNNER-DEBUG] iter={iteration} | context_governance={_gov_ms:.0f}ms | "
+                      f"messages_for_model={len(messages_for_model)} | tools={len(_tool_defs)}", flush=True)
             context = AgentHookContext(iteration=iteration, messages=messages)
             await hook.before_iteration(context)
+            _t_req = _time.monotonic()
+            if _DBG:
+                print(f"[RUNNER-DEBUG] iter={iteration} | calling _request_model...", flush=True)
             response = await self._request_model(spec, messages_for_model, hook, context)
+            if _DBG:
+                _req_ms = (_time.monotonic() - _t_req) * 1000
+                print(f"[RUNNER-DEBUG] iter={iteration} | _request_model returned in {_req_ms:.0f}ms | "
+                      f"finish_reason={response.finish_reason} | "
+                      f"has_content={bool(response.content)} | "
+                      f"tool_calls={len(response.tool_calls)} | "
+                      f"should_execute_tools={response.should_execute_tools}", flush=True)
             raw_usage = self._usage_dict(response.usage)
             context.response = response
             context.usage = dict(raw_usage)
@@ -323,11 +348,19 @@ class AgentRunner:
 
                 await hook.before_execute_tools(context)
 
+                _t_tools = _time.monotonic()
+                if _DBG:
+                    _tool_names = [tc.name for tc in response.tool_calls]
+                    print(f"[RUNNER-DEBUG] iter={iteration} | executing tools: {_tool_names}", flush=True)
                 results, new_events, fatal_error = await self._execute_tools(
                     spec,
                     response.tool_calls,
                     external_lookup_counts,
                 )
+                if _DBG:
+                    _tools_ms = (_time.monotonic() - _t_tools) * 1000
+                    print(f"[RUNNER-DEBUG] iter={iteration} | tools done in {_tools_ms:.0f}ms | "
+                          f"results={len(results)} | fatal_error={fatal_error}", flush=True)
                 tool_events.extend(new_events)
                 context.tool_results = list(results)
                 context.tool_events = list(new_events)
@@ -601,6 +634,12 @@ class AgentRunner:
             if drained_after_max_iterations:
                 had_injections = True
 
+        _total_ms = (_time.monotonic() - _t_run_start) * 1000
+        if _DBG:
+            print(f"[RUNNER-DEBUG] AgentRunner.run() DONE | "
+                  f"total={_total_ms:.0f}ms | stop_reason={stop_reason} | "
+                  f"iterations_used={iteration + 1 if 'iteration' in dir() else 0} | "
+                  f"final_content_len={len(final_content or '')}", flush=True)
         return AgentRunResult(
             final_content=final_content,
             messages=messages,
@@ -756,6 +795,14 @@ class AgentRunner:
                 "detail": prep_error.split(": ", 1)[-1][:120],
             }
             return prep_error + _HINT, event, RuntimeError(prep_error) if spec.fail_on_tool_error else None
+        # Log tool call invocation
+        _args_preview = json.dumps(tool_call.arguments, ensure_ascii=False)
+        if len(_args_preview) > 200:
+            _args_preview = _args_preview[:200] + "..."
+        logger.info(
+            "[TOOL] calling {}(args={}) session={}",
+            tool_call.name, _args_preview, spec.session_key or "default",
+        )
         try:
             if tool is not None:
                 result = await tool.execute(**params)
@@ -764,6 +811,10 @@ class AgentRunner:
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
+            logger.warning(
+                "[TOOL] {} raised {}: {} (session={})",
+                tool_call.name, type(exc).__name__, exc, spec.session_key or "default",
+            )
             event = {
                 "name": tool_call.name,
                 "status": "error",
@@ -782,6 +833,11 @@ class AgentRunner:
             return _ASK_USER_PENDING, event, None
 
         if isinstance(result, str) and result.startswith("Error"):
+            logger.warning(
+                "[TOOL] {} returned error: {} (session={})",
+                tool_call.name, result.replace("\n", " ").strip()[:120],
+                spec.session_key or "default",
+            )
             event = {
                 "name": tool_call.name,
                 "status": "error",
@@ -797,6 +853,10 @@ class AgentRunner:
             detail = "(empty)"
         elif len(detail) > 120:
             detail = detail[:120] + "..."
+        logger.info(
+            "[TOOL] {} completed: status=ok detail={} (session={})",
+            tool_call.name, detail[:120], spec.session_key or "default",
+        )
         return result, {"name": tool_call.name, "status": "ok", "detail": detail}, None
 
     async def _emit_checkpoint(

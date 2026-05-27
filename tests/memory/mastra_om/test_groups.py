@@ -333,35 +333,27 @@ class TestReconcileFromReflection:
 # ── Retrieval Instructions ─────────────────────────────────────────────────
 
 class TestRetrievalInstructions:
-    """Verify OBSERVATION_RETRIEVAL_INSTRUCTIONS contains all sections."""
+    """Verify OBSERVATION_RETRIEVAL_INSTRUCTIONS contains expected sections."""
 
-    def test_contains_recall_title(self):
-        assert 'Recall — looking up source messages' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
+    def test_contains_observation_memory_title(self):
+        assert '## Observation Memory' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
 
     def test_contains_observation_group_explanation(self):
         assert '<observation-group>' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
         assert 'startId:endId' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
 
-    def test_contains_when_to_use(self):
-        assert 'When to use recall' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
+    def test_contains_auto_recall_description(self):
+        assert 'automatically recalls' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
+        assert 'current task' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
+
+    def test_contains_when_detail_may_lack(self):
+        assert 'observations may lack detail' in OBSERVATION_RETRIEVAL_INSTRUCTIONS.lower() or 'may lack detail' in OBSERVATION_RETRIEVAL_INSTRUCTIONS.lower()
+
+    def test_contains_repeat_show_reproduce(self):
         assert 'repeat, show, or reproduce' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
 
-    def test_contains_how_to_use(self):
-        assert 'How to use recall' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
-        assert 'cursor' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
+    def test_contains_exact_content_guidance(self):
+        assert 'exact content' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
 
-    def test_contains_detail_levels(self):
-        assert 'Detail levels' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
-        assert 'low' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
-        assert 'high' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
-
-    def test_contains_truncated_parts_guidance(self):
-        assert 'Following up on truncated parts' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
-        assert 'truncated' in OBSERVATION_RETRIEVAL_INSTRUCTIONS.lower()
-
-    def test_contains_when_not_needed(self):
-        assert 'When recall is NOT needed' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
-
-    def test_contains_pagination_hints(self):
-        assert 'hasNextPage' in OBSERVATION_RETRIEVAL_INSTRUCTIONS
-        assert 'paginate' in OBSERVATION_RETRIEVAL_INSTRUCTIONS.lower()
+    def test_contains_insufficient_detail_acknowledgement(self):
+        assert 'insufficient' in OBSERVATION_RETRIEVAL_INSTRUCTIONS

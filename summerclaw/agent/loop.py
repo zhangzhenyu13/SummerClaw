@@ -454,6 +454,12 @@ class AgentLoop:
         self._current_iteration: int = 0
         self.commands = CommandRouter()
         register_builtin_commands(self.commands)
+        # Register agent_trainer commands (/train, /train_status, /train_stop)
+        try:
+            from summerclaw.agent_trainer.command import register_commands as _register_trainer_cmds
+            _register_trainer_cmds(self.commands)
+        except ImportError:
+            pass
         # Log active execution mode and feature status
         _features = [f"mode={self._execution_mode}"]
         if self._planner is not None:

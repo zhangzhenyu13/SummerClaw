@@ -83,6 +83,11 @@ matrix = [
 discord = [
     "discord.py>=2.5.2,<3.0.0",
 ]
+filelinker = [
+    "aiofiles>=24.0.0",
+    "starlette>=1.0.0",
+    "uvicorn>=0.30.0",
+]
 langsmith = [
     "langsmith>=0.1.0",
 ]
@@ -100,6 +105,9 @@ emem = [
 #   git clone https://github.com/agentscope-ai/ReMe.git && cd ReMe && pip install -e ".[light]"
 reme = [
     "reme-ai>=0.3.1.9",
+]
+dashboard = [
+    "gradio>=5.0.0,<7.0.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",

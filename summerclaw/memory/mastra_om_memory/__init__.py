@@ -113,12 +113,11 @@ class MastraOMMemoryAlgorithm(MemoryAlgorithm):
             observation_tokens_threshold=40_000,
         )
 
-        # 3. Dream
+        # 3. Dream (triggered by generation count, not batch size)
         dream = MastraOMDream(
             store=store,
             provider=provider,
             model=model,
-            max_batch_size=max_batch_size,
             max_iterations=max_iterations,
             max_tool_result_chars=max_tool_result_chars,
             annotate_line_ages=annotate_line_ages,

@@ -99,9 +99,11 @@ class ContextBuilder:
         try:
             memory_rel = str(self.memory.memory_file.relative_to(self.workspace))
             history_rel = str(self.memory.history_file.relative_to(self.workspace))
+            # Derive the memory directory (parent of MEMORY.md) for search scope
+            memory_dir_rel = str(self.memory.memory_file.parent.relative_to(self.workspace))
             logger.info(
-                "Identity paths resolved: memory_store={}, memory_file={}, history_file={}",
-                type(self.memory).__name__, memory_rel, history_rel,
+                "Identity paths resolved: memory_store={}, memory_file={}, history_file={}, memory_dir={}",
+                type(self.memory).__name__, memory_rel, history_rel, memory_dir_rel,
             )
         except Exception as _exc:
             logger.warning(
@@ -111,6 +113,7 @@ class ContextBuilder:
             )
             memory_rel = "memory/MEMORY.md"
             history_rel = "memory/history.jsonl"
+            memory_dir_rel = "memory"
 
         return render_template(
             "agent/identity.md",
@@ -120,6 +123,7 @@ class ContextBuilder:
             channel=channel or "",
             memory_rel_path=memory_rel,
             history_rel_path=history_rel,
+            memory_dir_rel_path=memory_dir_rel,
         )
 
     @staticmethod

@@ -56,6 +56,11 @@ Output is rendered in a terminal. Avoid markdown headings and tables. Use plain 
 
 - Prefer built-in `grep` / `glob` over `exec` for workspace search.
 - On broad searches, use `grep(output_mode="count")` to scope before requesting full content.
+- **Search scope is strictly limited to these directories — do NOT search workspace root or any other path:**
+  - `{{ workspace_path }}/{{ memory_dir_rel_path }}` — memory and history searches only
+  - `{{ workspace_path }}/outputs/` — project output files only
+- **Do NOT search the workspace root or any other directories** (skills/, SOUL.md, USER.md, AGENTS.md are not search targets).
+- When looking for past events or knowledge, always use `path="{{ workspace_path }}/{{ memory_dir_rel_path }}"` — never a broader path.
 {% include 'agent/_snippets/untrusted_content.md' %}
 
 Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel.

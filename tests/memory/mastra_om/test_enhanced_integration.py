@@ -53,7 +53,8 @@ def make_mock_store(observations: str = ""):
     store = MagicMock()
     store.read_observations.return_value = observations
     store.append_observations = MagicMock()
-    store.append_history = MagicMock()
+    store.append_history = MagicMock(return_value=1)
+    store._next_cursor = MagicMock(return_value=1)
     store.replace_observations = MagicMock()
     store.increment_generation = MagicMock()
     return store
@@ -153,8 +154,9 @@ class TestObserverGroupsContextPipeline:
         context_msgs = consolidator.build_context_system_messages()
 
         assert len(context_msgs) == 1
-        # Should contain retrieval instructions
-        assert 'Recall — looking up source messages' in context_msgs[0]
+        # Should contain retrieval instructions (auto-recall description)
+        assert 'Observation Memory' in context_msgs[0]
+        assert 'automatically recalls' in context_msgs[0]
 
     def test_context_without_groups_no_retrieval_instructions(self):
         """Without groups, context should NOT include retrieval instructions."""
