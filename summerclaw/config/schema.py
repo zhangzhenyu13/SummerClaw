@@ -298,7 +298,7 @@ class GatewayConfig(Base):
 
     host: str = "127.0.0.1"  # Safer default: local-only bind.
     port: int = 18790
-    dashboard_port: int = 7860  # Training dashboard port (Gradio WebUI).
+    dashboard_port: int = 8443  # Training dashboard port (must match Tailscale Funnel allowed ports: 443/8443/10000).
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 

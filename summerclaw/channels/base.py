@@ -26,6 +26,12 @@ class BaseChannel(ABC):
     transcription_api_key: str = ""
     transcription_api_base: str = ""
 
+    #: Whether this channel can deliver messages proactively (without an
+    #: active user session).  Channels that require session-scoped state
+    #: (e.g. WeChat context_token, WeCom chat_frame) should set this to
+    #: ``False`` so the system skips startup / system notifications for them.
+    supports_proactive_send: bool = True
+
     def __init__(self, config: Any, bus: MessageBus):
         """
         Initialize the channel.

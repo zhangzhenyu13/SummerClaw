@@ -188,12 +188,12 @@ _SUB_COMMANDS.update({
 def start_dashboard_from_agent(
     agent: AgentLoop,
     algorithm_name: str = "skillopt",
-    dashboard_port: int = 7860,
+    dashboard_port: int = 443,
     share: bool = True,
 ) -> str | None:
     """Start a training dashboard without a CommandContext.
 
-    Called by the gateway at boot to start the Gradio dashboard
+    Called by the gateway at boot to start the FastAPI + React dashboard
     in a background thread.
 
     Returns the dashboard URL string, or *None* on failure.
@@ -239,7 +239,7 @@ def start_dashboard_from_agent(
         max_tool_result_chars=getattr(agent, "max_tool_result_chars", 4000),
         temperature=0.7,
         max_tokens=8192,
-        workers=trainer_cfg.get("workers", 4),
+        workers=trainer_cfg.get("workers", 0),  # 0 = auto-derive 80% of maxConcurrency
         tool_registry=getattr(agent, "tools", None),  # use main agent's tools
     )
 
@@ -254,7 +254,7 @@ def start_dashboard_from_agent(
         model=model,
         minibatch_size=trainer_cfg.get("minibatch_size", 5),
         edit_budget=trainer_cfg.get("edit_budget", 4),
-        workers=trainer_cfg.get("workers", 4),
+        workers=trainer_cfg.get("workers", 0),  # 0 = auto-derive 80% of maxConcurrency
         optimizer_model=trainer_cfg.get("optimizer_model"),
         update_mode=trainer_cfg.get("update_mode", "patch"),
         lr_mode=trainer_cfg.get("lr_mode", "constant"),
@@ -270,6 +270,12 @@ def start_dashboard_from_agent(
         rewrite_max_completion_tokens=trainer_cfg.get("rewrite_max_completion_tokens", 64000),
     )
 
+    # Per-stage workers overrides (default to algo.workers if not set)
+    for attr in ("analyst_workers", "aggregate_workers", "evaluate_workers"):
+        v = trainer_cfg.get(attr, 0)
+        if v > 0:
+            setattr(algo, attr, v)
+
     engine = TrainerEngine(
         algorithm=algo,
         env=env,
@@ -281,6 +287,7 @@ def start_dashboard_from_agent(
         batch_size=trainer_cfg.get("batch_size", 5),
         edit_budget=trainer_cfg.get("edit_budget", 4),
         seed=trainer_cfg.get("seed", 42),
+        eval_test=trainer_cfg.get("eval_test", True),
     )
 
     # Try pre-loading data
@@ -292,7 +299,7 @@ def start_dashboard_from_agent(
             engine.set_data_loader(loader)
             logger.info("Pre-loaded data from {}: {}", data_dir, loader.summary())
 
-    port = dashboard_port or trainer_cfg.get("dashboard_port", 7860)
+    port = dashboard_port or trainer_cfg.get("dashboard_port", 443)
     dashboard = DashboardServer(
         engine=engine,
         port=port,

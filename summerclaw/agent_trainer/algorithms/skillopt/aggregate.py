@@ -39,6 +39,7 @@ async def _merge_batch(
     update_mode: str = "patch",
     meta_skill_context: str = "",
     level: int = 1,
+    rejected_buffer_context: str = "",
 ) -> dict:
     """Call LLM to merge a batch of patches into one."""
     mode = normalize_update_mode(update_mode)
@@ -51,6 +52,8 @@ async def _merge_batch(
     )
     if meta_skill_context.strip():
         user = f"## Optimizer Meta Skill\n{meta_skill_context}\n\n{user}"
+    if rejected_buffer_context.strip():
+        user = f"{rejected_buffer_context}\n\n{user}"
 
     max_tokens = 64000 if is_full_rewrite_minibatch_mode(mode) else 4096
     response = await _call_llm(
@@ -87,6 +90,8 @@ async def _hierarchical_merge(
     batch_size: int = 8,
     label: str = "",
     meta_skill_context: str = "",
+    semaphore: asyncio.Semaphore | None = None,
+    rejected_buffer_context: str = "",
 ) -> dict:
     """Hierarchically merge N patches using the given system prompt."""
     mode = normalize_update_mode(update_mode)
@@ -99,6 +104,8 @@ async def _hierarchical_merge(
     if len(patches) == 1:
         return patches[0]
 
+    sem = semaphore or asyncio.Semaphore()
+
     current = list(patches)
     level = 0
     while len(current) > 1:
@@ -110,20 +117,24 @@ async def _hierarchical_merge(
             label, level, len(current), len(batches),
         )
 
+        async def _guarded_merge(batch, lvl=level):
+            async with sem:
+                return await _merge_batch(
+                    provider, model, skill_content, batch, system_prompt,
+                    update_mode=mode,
+                    meta_skill_context=meta_skill_context,
+                    level=lvl,
+                    rejected_buffer_context=rejected_buffer_context,
+                )
+
         tasks = []
         for batch in batches:
             if len(batch) == 1:
-                # Pass through single-patch batches
                 async def _passthrough(b=batch):
                     return b[0]
                 tasks.append(_passthrough())
             else:
-                tasks.append(_merge_batch(
-                    provider, model, skill_content, batch, system_prompt,
-                    update_mode=mode,
-                    meta_skill_context=meta_skill_context,
-                    level=level,
-                ))
+                tasks.append(_guarded_merge(batch))
 
         current = await asyncio.gather(*tasks)
 
@@ -142,6 +153,8 @@ async def merge_patches(
     *,
     update_mode: str = "patch",
     meta_skill_context: str = "",
+    workers: int = 0,
+    rejected_buffer_context: str = "",
 ) -> Patch:
     """Failure-first hierarchical merge with support count tracking.
 
@@ -155,11 +168,15 @@ async def merge_patches(
         One of "patch", "rewrite_from_suggestions", "full_rewrite_minibatch".
     meta_skill_context : str
         Cross-epoch optimizer memory context.
+    workers : int
+        Max concurrent LLM merge calls (0 = unlimited).
 
     Returns a merged Patch.
     """
     mode = normalize_update_mode(update_mode)
     pkey = payload_key(mode)
+
+    sem = asyncio.Semaphore(workers) if workers > 0 else None
 
     logger.info(
         "[AGGREGATE] failure={} success={} (mode={})",
@@ -177,6 +194,8 @@ async def merge_patches(
         update_mode=mode,
         batch_size=batch_size, label="failure",
         meta_skill_context=meta_skill_context,
+        semaphore=sem,
+        rejected_buffer_context=rejected_buffer_context,
     )
 
     success_merged = await _hierarchical_merge(
@@ -185,6 +204,8 @@ async def merge_patches(
         update_mode=mode,
         batch_size=batch_size, label="success",
         meta_skill_context=meta_skill_context,
+        semaphore=sem,
+        rejected_buffer_context=rejected_buffer_context,
     )
 
     f_items = get_payload_items(failure_merged, mode)
@@ -216,6 +237,8 @@ async def merge_patches(
     )
     if meta_skill_context.strip():
         user = f"## Optimizer Meta Skill\n{meta_skill_context}\n\n{user}"
+    if rejected_buffer_context.strip():
+        user = f"{rejected_buffer_context}\n\n{user}"
 
     max_tokens = 64000 if is_full_rewrite_minibatch_mode(mode) else 4096
     response = await _call_llm(

@@ -83,6 +83,9 @@ class WecomChannel(BaseChannel):
 
     name = "wecom"
     display_name = "WeCom"
+    # WeCom requires an active chat frame (WebSocket session) to send messages;
+    # proactive/system notifications cannot be delivered without user interaction.
+    supports_proactive_send = False
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:

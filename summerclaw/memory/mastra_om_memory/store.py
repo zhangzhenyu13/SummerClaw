@@ -52,9 +52,14 @@ class MastraOMStore:
         workspace: Path,
         max_history_entries: int = _DEFAULT_MAX_HISTORY,
         algo_name: str | None = None,
+        recall_config: "RecallConfig | None" = None,
     ):
+        from summerclaw.memory.mastra_om_memory.recall import RecallConfig
+
         self.workspace = workspace
         self.max_history_entries = max_history_entries
+        self._recall_config = recall_config if recall_config is not None else RecallConfig()
+        self._recalled_entries_cache: list[dict[str, Any]] = []
         if algo_name:
             self._algo_name = algo_name
             self.memory_dir = ensure_dir(workspace / "memory" / algo_name)
@@ -359,11 +364,11 @@ class MastraOMStore:
     # -- context injection (used by context.py) ------------------------------
 
     def get_memory_context(self) -> str:
-        """Return observations + MEMORY.md as memory context.
+        """Return observations + recalled session context + MEMORY.md as memory context.
 
-        Only observations and long-term memory are injected into the agent
-        context. Raw history (history.jsonl) is NEVER loaded into context —
-        it exists solely for Dream's internal analysis pipeline.
+        Observations (distilled facts) are injected first, then any recalled
+        raw session history (populated by the auto-recall LLM), then long-term
+        memory. Raw history.jsonl is otherwise never loaded into context.
         """
         observations = self.read_observations()
         long_term = self.read_memory()
@@ -379,6 +384,12 @@ class MastraOMStore:
                     "they carry higher informational priority than raw messages:\n\n"
                     f"{obs_records}"
                 )
+
+        # ── Auto-recall: LLM-judged raw session logs ──
+        recall_section = self._build_recall_section()
+        if recall_section:
+            parts.append(recall_section)
+
         if long_term:
             parts.append(f"## Long-term Memory\n{long_term}")
 
@@ -386,13 +397,29 @@ class MastraOMStore:
         if combined:
             logger.info(
                 "[OM:context] injecting memory context: {} chars (obs={} chars, "
-                "MEMORY.md={} chars, gen={})",
+                "recall={} chars, MEMORY.md={} chars, gen={})",
                 len(combined),
                 len(observations) if observations else 0,
+                len(recall_section) if recall_section else 0,
                 len(long_term) if long_term else 0,
                 self.get_generation_count(),
             )
         return combined
+
+    def _build_recall_section(self) -> str:
+        """Build the recall section from cached recalled entries.
+
+        Returns empty string if no entries are cached (recall not run, disabled,
+        or no relevant cycles found).
+        """
+        if not self._recalled_entries_cache:
+            return ""
+        from summerclaw.memory.mastra_om_memory.recall import format_recall_section
+
+        return format_recall_section(
+            self._recalled_entries_cache,
+            self._recall_config.max_recall_bytes,
+        )
 
     @staticmethod
     def _observations_as_records(observations_text: str) -> str:

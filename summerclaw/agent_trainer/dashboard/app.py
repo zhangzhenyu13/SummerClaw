@@ -1,24 +1,23 @@
-"""Training dashboard — Gradio WebUI + FastAPI status endpoints.
+"""Training dashboard — FastAPI + React WebUI.
 
 Provides:
-  - Real-time training progress visualization
-  - Manual control (pause, cancel, deploy)
-  - REST API for external status queries
+  - Real-time training progress visualization (React frontend)
+  - REST API for all dashboard operations
+  - WebSocket for real-time log/status streaming
+  - Tailscale Funnel for optional public URL access
 
 The dashboard runs as a background web server started by the ``/train``
 channel command. The URL is returned to the channel for the user to
 open in a browser.
 
-This module is intentionally thin — all logic lives in sibling modules:
-  - ``task_utils.py``: task scanning / caching
-  - ``api.py``: FastAPI REST endpoints
-  - ``ui_state.py``: UI state & callbacks
-  - ``ui_data.py``: Data Tab layout
-  - ``ui.py``: main Gradio Blocks layout
+This module is intentionally thin — all API logic lives in ``api.py``
+and task utilities in ``task_utils.py``.
 """
 from __future__ import annotations
 
+import shutil
 import socket
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -29,10 +28,9 @@ from loguru import logger
 from summerclaw.agent_trainer.engine.trainer import TrainerEngine
 from summerclaw.agent_trainer.dashboard.task_utils import _default_train_root
 from summerclaw.agent_trainer.dashboard.api import _create_api
-from summerclaw.agent_trainer.dashboard.ui import create_gradio_app
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────
+# -- Helpers ----------------------------------------------------------------
 
 def _get_local_ip() -> str:
     """Return the machine's LAN IP address (e.g. 192.168.x.x)."""
@@ -47,13 +45,106 @@ def _get_local_ip() -> str:
         return "127.0.0.1"
 
 
-# ── Dashboard server ─────────────────────────────────────────────────────
+def _get_frontend_dist() -> Path | None:
+    """Locate the React frontend build output directory.
+
+    Search order:
+      1. ``<dashboard_dir>/frontend/dist``
+      2. ``<dashboard_dir>/frontend/build``
+    """
+    dashboard_dir = Path(__file__).resolve().parent
+    for name in ("dist", "build"):
+        p = dashboard_dir / "frontend" / name
+        if p.is_dir() and (p / "index.html").is_file():
+            return p
+    return None
+
+
+def _start_tailscale_funnel(port: int) -> str | None:
+    """Start a Tailscale Funnel and return the public HTTPS URL.
+
+    Returns ``None`` if Tailscale is not available or Funnel fails.
+    """
+    if not shutil.which("tailscale"):
+        logger.debug("tailscale CLI not found in PATH")
+        return None
+
+    try:
+        result = subprocess.run(
+            ["tailscale", "funnel", "--bg", str(port)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            logger.warning("tailscale funnel failed: {}", result.stderr.strip())
+            return None
+
+        # Parse the URL from stdout/stderr
+        # Typical output: "Available on the internet:\n\nhttps://hostname.tail1234.ts.net\n..."
+        output = result.stdout + result.stderr
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("https://") and ".ts.net" in line:
+                url = line.rstrip("/")
+                logger.info("Tailscale Funnel URL: {}", url)
+                return url
+
+        # If no URL found in output, try `tailscale status --json` to get hostname
+        try:
+            status_result = subprocess.run(
+                ["tailscale", "status", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if status_result.returncode == 0:
+                import json
+                status = json.loads(status_result.stdout)
+                self_node = status.get("Self", {})
+                dns_name = self_node.get("DNSName", "")
+                if dns_name:
+                    # DNSName has trailing dot, e.g. "hostname.tail1234.ts.net."
+                    hostname = dns_name.rstrip(".")
+                    url = f"https://{hostname}"
+                    logger.info("Tailscale Funnel URL (from status): {}", url)
+                    return url
+        except Exception:
+            pass
+
+        logger.warning("Could not parse Tailscale Funnel URL from output")
+        return None
+
+    except FileNotFoundError:
+        logger.debug("tailscale command not found")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("tailscale funnel timed out")
+        return None
+    except Exception as exc:
+        logger.warning("Tailscale Funnel error: {}", exc)
+        return None
+
+
+def _stop_tailscale_funnel() -> None:
+    """Stop the Tailscale Funnel (best-effort)."""
+    try:
+        subprocess.run(
+            ["tailscale", "funnel", "--bg", "off"],
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+# -- Dashboard server -------------------------------------------------------
 
 class DashboardServer:
-    """Manages the Gradio + FastAPI dashboard server.
+    """Manages the FastAPI + React dashboard server.
 
     The server runs in a background thread. Both the local (LAN) URL and
-    the optional public (share-tunnel) URL are returned for the channel
+    the optional public (Tailscale Funnel) URL are returned for the channel
     and console to display.
     """
 
@@ -61,7 +152,7 @@ class DashboardServer:
         self,
         engine: TrainerEngine,
         host: str = "0.0.0.0",
-        port: int = 7860,
+        port: int = 443,
         share: bool = True,
         train_root: Path | None = None,
         active_sessions: dict | None = None,
@@ -96,7 +187,7 @@ class DashboardServer:
                 break
             time.sleep(0.5)
 
-        # If share is enabled, wait for tunnel URL (but bail out early on failure)
+        # If share is enabled, wait for funnel URL (but bail out early on failure)
         if self.share and not self._share_url:
             for _ in range(40):  # up to 20s
                 if self._share_url or self._share_done:
@@ -108,186 +199,190 @@ class DashboardServer:
     def _run(self) -> None:
         """Run the dashboard server (in background thread).
 
-        Uses ``mount_gradio_app`` + uvicorn to bind ``0.0.0.0`` (LAN accessible),
-        then starts a Gradio share tunnel via ``setup_tunnel`` in a separate
-        thread for public URL access.
-
-        Calls ``uvicorn.Server.run()`` directly (same pattern as validated in
-        the integration test) to avoid event-loop management pitfalls.
+        Uses FastAPI + uvicorn to serve both the REST API and the React
+        frontend static files. Optionally starts a Tailscale Funnel for
+        public URL access.
         """
         try:
-            import gradio as gr
-        except ImportError:
-            logger.error("Gradio not installed; cannot start dashboard")
-            return
-
-        gradio_app = create_gradio_app(
-            self.engine,
-            train_root=self.train_root,
-            active_sessions=self.active_sessions,
-        )
-
-        if gradio_app is None:
-            logger.error("Failed to create Gradio app")
+            from contextlib import asynccontextmanager
+            from fastapi import FastAPI
+            from fastapi.middleware.cors import CORSMiddleware
+            from fastapi.staticfiles import StaticFiles
+            from fastapi.responses import FileResponse
+            import uvicorn
+        except ImportError as exc:
+            logger.error("FastAPI/uvicorn not installed: {}", exc)
             return
 
         lan_ip = _get_local_ip()
         local_url = f"http://{lan_ip}:{self.port}"
 
-        # ── Mount Gradio onto FastAPI + uvicorn ────────────────────────
-        try:
-            from contextlib import asynccontextmanager
-            from fastapi import FastAPI as _FastAPI
-            from gradio import mount_gradio_app
-            import uvicorn
+        # -- Build the FastAPI app ----------------------------------------
+        server_ready = threading.Event()
 
-            server_ready = threading.Event()
+        # Mount REST API endpoints
+        api_router, _state = _create_api(
+            self.engine,
+            train_root=self.train_root,
+            active_sessions=self.active_sessions,
+        )
 
-            @asynccontextmanager
-            async def _lifespan(app):
-                # Runs inside the uvicorn event loop after startup
-                self._local_url = local_url
-                self._ready = True
-                server_ready.set()
-                yield
+        # -- Lifespan: start scheduler inside the async event loop --------
+        _scheduler_ref = getattr(_state, "scheduler", None)
 
-            api_app = _FastAPI(lifespan=_lifespan)
-
-            # Add CORS middleware for external API access
+        @asynccontextmanager
+        async def _lifespan(app):
+            self._local_url = local_url
+            self._ready = True
+            server_ready.set()
+            if _scheduler_ref is not None:
+                _scheduler_ref.start()
             try:
-                from fastapi.middleware.cors import CORSMiddleware
-                api_app.add_middleware(
-                    CORSMiddleware,
-                    allow_origins=["*"],
-                    allow_methods=["*"],
-                    allow_headers=["*"],
-                )
-            except ImportError:
-                pass
+                yield
+            finally:
+                if _scheduler_ref is not None:
+                    _scheduler_ref.stop()
 
-            # Mount REST API endpoints (status, logs, history, etc.)
-            api_router = _create_api(self.engine)
-            if api_router:
-                api_app.include_router(api_router)
+        api_app = FastAPI(lifespan=_lifespan, title="Agent Trainer Dashboard")
 
-            mount_gradio_app(
-                api_app,
-                gradio_app,
-                path="/",
-                server_name=lan_ip,
-                server_port=self.port,
+        # CORS
+        api_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        if api_router:
+            api_app.include_router(api_router)
+
+        # Serve React frontend
+        dist_dir = _get_frontend_dist()
+        if dist_dir:
+            # Serve static assets (js, css, images, etc.)
+            assets_dir = dist_dir / "assets"
+            if assets_dir.is_dir():
+                api_app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+            # Catch-all: serve index.html for SPA client-side routing
+            @api_app.get("/{full_path:path}")
+            async def _serve_spa(full_path: str):
+                # If the path looks like a file that exists in dist, serve it
+                file_path = dist_dir / full_path
+                if full_path and file_path.is_file():
+                    return FileResponse(str(file_path))
+                # Otherwise return index.html for client-side routing
+                return FileResponse(str(dist_dir / "index.html"))
+        else:
+            logger.warning(
+                "React frontend not built. Run 'cd dashboard/frontend && npm run build' "
+                "to create the UI. API-only mode is still functional."
             )
 
-            config = uvicorn.Config(
-                api_app,
-                host=self.host,
-                port=self.port,
-                log_level="warning",
-                access_log=False,
-            )
-            server = uvicorn.Server(config)
-            self._app = server
+            @api_app.get("/")
+            async def _api_only_root():
+                return {
+                    "message": "Dashboard API is running. Frontend not built.",
+                    "docs": "/docs",
+                }
 
-            # ── Share tunnel thread ──────────────────────────────────────
-            def _share_tunnel_thread():
-                server_ready.wait(timeout=15)
-                if not server_ready.is_set():
-                    return
-                time.sleep(1)  # brief delay for accept
-                print(f"  * Running on local URL:  {local_url}")
-                logger.info("Dashboard local URL: {}", local_url)
-                if self.share:
-                    self._share_url = self._start_share_tunnel()
-                    self._share_done = True
-                    if self._share_url:
-                        print(f"  * Running on public URL: {self._share_url}")
-                        logger.info("Dashboard public URL: {}", self._share_url)
-                    else:
-                        print(f"  * Share tunnel unavailable — use local URL: {local_url}")
-                        logger.warning(
-                            "Gradio share tunnel failed (network unreachable or "
-                            "api.gradio.app not resolvable). Dashboard is still "
-                            "accessible via local URL: {}", local_url,
-                        )
+        # -- Launch uvicorn -----------------------------------------------
+        # Custom log config: only WARNING+ for all uvicorn loggers
+        _uvicorn_log_config = {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "()": "uvicorn.logging.DefaultFormatter",
+                    "fmt": "%(levelprefix)s %(message)s",
+                    "use_colors": None,
+                },
+                "access": {
+                    "()": "uvicorn.logging.AccessFormatter",
+                    "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)d',
+                },
+            },
+            "handlers": {
+                "default": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stderr",
+                },
+                "access": {
+                    "formatter": "access",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stdout",
+                },
+            },
+            "loggers": {
+                "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+                "uvicorn.error": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+                "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
+            },
+        }
 
+        config = uvicorn.Config(
+            api_app,
+            host=self.host,
+            port=self.port,
+            log_config=_uvicorn_log_config,
+            access_log=False,
+        )
+        server = uvicorn.Server(config)
+        self._app = server
+
+        # -- Tailscale Funnel thread --------------------------------------
+        def _funnel_thread():
+            server_ready.wait(timeout=15)
+            if not server_ready.is_set():
+                return
+            time.sleep(1)
+            print(f"  * Running on local URL:  {local_url}")
+            logger.info("Dashboard local URL: {}", local_url)
             if self.share:
-                threading.Thread(target=_share_tunnel_thread, daemon=True).start()
-            else:
-                # No share — just print local URL once ready
-                def _print_local():
-                    server_ready.wait(timeout=15)
-                    if server_ready.is_set():
-                        time.sleep(1)
-                        print(f"  * Running on local URL:  {local_url}")
-                        logger.info("Dashboard local URL: {}", local_url)
-                threading.Thread(target=_print_local, daemon=True).start()
+                self._share_url = _start_tailscale_funnel(self.port)
+                self._share_done = True
+                if self._share_url:
+                    print(f"  * Running on public URL: {self._share_url}")
+                    logger.info("Dashboard public URL: {}", self._share_url)
+                else:
+                    print(f"  * Tailscale Funnel unavailable — use local URL: {local_url}")
+                    logger.warning(
+                        "Tailscale Funnel not available. Dashboard is still "
+                        "accessible via local URL: {}",
+                        local_url,
+                    )
 
-            # server.run() creates its own event loop and blocks until shutdown
+        if self.share:
+            threading.Thread(target=_funnel_thread, daemon=True).start()
+        else:
+            def _print_local():
+                server_ready.wait(timeout=15)
+                if server_ready.is_set():
+                    time.sleep(1)
+                    print(f"  * Running on local URL:  {local_url}")
+                    logger.info("Dashboard local URL: {}", local_url)
+            threading.Thread(target=_print_local, daemon=True).start()
+
+        # server.run() creates its own event loop and blocks until shutdown
+        try:
             server.run()
         except Exception as exc:
             logger.exception("Dashboard uvicorn launch failed: {}", exc)
-            return
-
-    def _start_share_tunnel(self) -> str | None:
-        """Start a Gradio share tunnel and return the public URL.
-
-        Calls ``gradio.networking.setup_tunnel()`` with the correct
-        ``local_host`` / ``local_port`` parameter names (Gradio 6.x).
-        ``share_token`` must be a non-None string (used as frpc CLI arg).
-        """
-        import secrets
-        share_token = secrets.token_urlsafe(32)
-        try:
-            from gradio.networking import setup_tunnel
-            url = setup_tunnel(
-                local_host="127.0.0.1",
-                local_port=self.port,
-                share_token=share_token,
-                share_server_address=None,
-                share_server_tls_certificate=None,
-            )
-            return url
-        except TypeError as exc:
-            # Gradio API signature changed — introspect and retry
-            logger.debug("setup_tunnel signature mismatch, retrying: {}", exc)
-            try:
-                import inspect
-                sig = inspect.signature(setup_tunnel)
-                params = list(sig.parameters.keys())
-                kwargs: dict[str, object] = {}
-                for p in params:
-                    if p in ("local_host", "server_name"):
-                        kwargs[p] = "127.0.0.1"
-                    elif p in ("local_port", "server_port"):
-                        kwargs[p] = self.port
-                    elif p in ("share_token",):
-                        kwargs[p] = share_token
-                    elif p in ("share_server_address",):
-                        kwargs[p] = None
-                    elif p in ("share_server_tls_certificate",):
-                        kwargs[p] = None
-                    else:
-                        kwargs[p] = None
-                url = setup_tunnel(**kwargs)
-                return url
-            except Exception:
-                logger.debug("setup_tunnel retry also failed", exc_info=True)
-                return None
-        except Exception:
-            logger.debug("setup_tunnel call failed", exc_info=True)
-            return None
 
     def stop(self) -> None:
         """Stop the dashboard server."""
         if self._app:
             try:
-                if hasattr(self._app, 'should_exit'):
-                    # uvicorn Server
+                if hasattr(self._app, "should_exit"):
                     self._app.should_exit = True
                 else:
                     self._app.close()
             except Exception:
                 pass
+        # Clean up Tailscale Funnel
+        if self._share_url:
+            _stop_tailscale_funnel()
         self._app = None
         self._local_url = None
         self._share_url = None

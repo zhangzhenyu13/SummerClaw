@@ -37,7 +37,7 @@ _DEFAULTS: dict[str, Any] = {
     "batch_size": 5,
     "edit_budget": 4,
     "seed": 42,
-    "workers": 4,
+    "workers": 0,  # 0 = auto-derive 80% of provider.maxConcurrency
     "accumulation": 1,
 
     # SkillOpt-specific
@@ -60,6 +60,11 @@ _DEFAULTS: dict[str, Any] = {
     "longitudinal_pair_policy": "mixed",
     "use_meta_skill": True,
 
+    # Rejected buffer
+    "use_rejected_buffer": True,
+    "rejected_buffer_max_size": 10,
+    "rejected_buffer_max_summary_chars": 200,
+
     # Rewrite
     "reasoning_effort": "high",
     "rewrite_reasoning_effort": "",
@@ -77,7 +82,7 @@ _DEFAULTS: dict[str, Any] = {
     "skill_init": "",
 
     # Dashboard
-    "dashboard_port": 7860,
+    "dashboard_port": 443,
     "dashboard_share": True,
 }
 
@@ -146,12 +151,15 @@ _FLATTEN_MAP: dict[str, str] = {
     "train.train_size": "train_size",
     "train.steps_per_epoch": "steps_per_epoch",
     "train.batch_size": "batch_size",
+    "train.workers": "workers",
     "train.accumulation": "accumulation",
     "train.seed": "seed",
     # gradient section
     "gradient.minibatch_size": "minibatch_size",
     "gradient.merge_batch_size": "merge_batch_size",
     "gradient.analyst_workers": "analyst_workers",
+    "gradient.aggregate_workers": "aggregate_workers",
+    "gradient.evaluate_workers": "evaluate_workers",
     "gradient.failure_only": "failure_only",
     "gradient.max_analyst_rounds": "max_analyst_rounds",
     # optimizer section
@@ -165,6 +173,9 @@ _FLATTEN_MAP: dict[str, str] = {
     "optimizer.slow_update_samples": "slow_update_samples",
     "optimizer.longitudinal_pair_policy": "longitudinal_pair_policy",
     "optimizer.use_meta_skill": "use_meta_skill",
+    "optimizer.use_rejected_buffer": "use_rejected_buffer",
+    "optimizer.rejected_buffer_max_size": "rejected_buffer_max_size",
+    "optimizer.rejected_buffer_max_summary_chars": "rejected_buffer_max_summary_chars",
     # evaluation section
     "evaluation.use_gate": "use_gate",
     "evaluation.sel_env_num": "sel_env_num",
@@ -174,6 +185,8 @@ _FLATTEN_MAP: dict[str, str] = {
     "env.name": "env",
     "env.skill_init": "skill_init",
     "env.out_root": "out_root",
+    "env.memory_algorithm": "memory_algorithm",
+    "env.enabled_tools": "enabled_tools",
 }
 
 

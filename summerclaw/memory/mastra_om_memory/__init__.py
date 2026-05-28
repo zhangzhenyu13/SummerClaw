@@ -47,6 +47,7 @@ from summerclaw.memory.mastra_om_memory.store import MastraOMStore
 from summerclaw.memory.mastra_om_memory.consolidator import MastraOMConsolidator
 from summerclaw.memory.mastra_om_memory.dream import MastraOMDream
 from summerclaw.memory.mastra_om_memory.auto_compact import MastraOMAutoCompact
+from summerclaw.memory.mastra_om_memory.recall import RecallConfig
 
 if TYPE_CHECKING:
     from summerclaw.providers.base import LLMProvider
@@ -95,8 +96,12 @@ class MastraOMMemoryAlgorithm(MemoryAlgorithm):
         annotate_line_ages: bool,
         embedding_config: Any = None,
     ) -> MemoryComponents:
-        # 1. Store
-        store = MastraOMStore(workspace, algo_name=self.name)
+        # 1. Store (with auto-recall enabled by default)
+        store = MastraOMStore(
+            workspace,
+            algo_name=self.name,
+            recall_config=RecallConfig(),
+        )
 
         # 2. Consolidator (Observer/Reflector pipeline)
         consolidator = MastraOMConsolidator(

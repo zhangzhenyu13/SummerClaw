@@ -192,7 +192,52 @@ class BaseAlgorithm(ABC):
         """
         return getattr(self, "edit_budget", 4)
 
+    # ── Rejected buffer hook ────────────────────────────────────────────
+
+    def record_rejection(
+        self,
+        step: int,
+        patch: Any,
+        score_before: float,
+        score_after: float,
+        failure_patterns: list[dict] | None = None,
+    ) -> None:
+        """Optional hook called when the gate rejects a candidate.
+
+        Override in subclasses to track rejected edits for negative
+        feedback (e.g. :class:`RejectedBuffer`).  Default: no-op.
+
+        Parameters
+        ----------
+        step : int
+            Global step at which the rejection occurred.
+        patch : Patch
+            The selected patch whose candidate was rejected.
+        score_before : float
+            Current skill score before the update attempt.
+        score_after : float
+            Candidate score that was rejected.
+        failure_patterns : list[dict] | None
+            Extracted failure patterns from the rollout that produced
+            the rejected candidate.  Stored in the buffer alongside the
+            rejected edits for richer negative feedback.
+        """
+        pass
+
     # ── Epoch-level hooks ───────────────────────────────────────────────
+
+    def on_epoch_start(self, epoch: int) -> None:
+        """Optional hook called at the start of each epoch.
+
+        Override in subclasses to reset per-epoch state (e.g. clear
+        epoch-local buffers).  Default: no-op.
+
+        Parameters
+        ----------
+        epoch : int
+            Current epoch number (1-based).
+        """
+        pass
 
     async def on_epoch_end(
         self,

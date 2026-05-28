@@ -15,6 +15,8 @@ from loguru import logger
 from summerclaw.agent_trainer.base import BaseAlgorithm
 from summerclaw.agent_trainer.registry import algorithm
 from summerclaw.agent_trainer.types import (
+    Edit,
+    FailureSummaryEntry,
     Patch,
     RawPatch,
     RolloutResult,
@@ -24,6 +26,7 @@ from .aggregate import merge_patches
 from .lr_autonomous import decide_autonomous_learning_rate
 from .meta_skill import format_meta_skill_context, run_meta_skill
 from .reflect import run_minibatch_reflect
+from .rejected_buffer import RejectedBuffer
 from .rewrite import rewrite_skill_from_suggestions
 from .scheduler import AutonomousScheduler, build_scheduler
 from .select import rank_and_select
@@ -78,6 +81,9 @@ class SkillOptAlgorithm(BaseAlgorithm):
         longitudinal_pair_policy: str = "mixed",
         rewrite_reasoning_effort: str | None = None,
         rewrite_max_completion_tokens: int = 64000,
+        use_rejected_buffer: bool = True,
+        rejected_buffer_max_size: int = 10,
+        rejected_buffer_max_summary_chars: int = 200,
     ):
         """Initialize SkillOpt algorithm.
 
@@ -123,12 +129,28 @@ class SkillOptAlgorithm(BaseAlgorithm):
             Separate reasoning effort for rewrite calls (None = use ``reasoning_effort``).
         rewrite_max_completion_tokens : int
             Max completion tokens for rewrite calls.
+        use_rejected_buffer : bool
+            Whether to track rejected edits and inject them as negative
+            feedback into subsequent Reflect / Aggregate LLM calls.
+        rejected_buffer_max_size : int
+            Maximum number of rejected entries retained in the buffer.
+        rejected_buffer_max_summary_chars : int
+            Max character length per edit summary stored in the buffer.
         """
         self.provider = provider
         self.model = model
         self.minibatch_size = minibatch_size
         self.edit_budget = edit_budget
-        self.workers = workers
+        # workers: 0 = auto-derive 80% of provider.max_concurrency
+        if workers <= 0:
+            provider_max = getattr(provider, "max_concurrency", 0) or 0
+            self.workers = max(1, int(provider_max * 0.8)) if provider_max > 0 else 4
+        else:
+            self.workers = workers
+        # Per-stage concurrency (all default to workers)
+        self.analyst_workers = self.workers    # Reflect stage
+        self.aggregate_workers = self.workers  # Aggregate stage
+        self.evaluate_workers = self.workers   # Evaluate stage (via env)
         self.optimizer_model = optimizer_model or model
         self.update_mode = update_mode
         self.lr_mode = lr_mode
@@ -144,6 +166,19 @@ class SkillOptAlgorithm(BaseAlgorithm):
         self.rewrite_max_completion_tokens = rewrite_max_completion_tokens
         self._scheduler = None  # built in init_training_run()
 
+        # Rejected buffer — negative feedback from gate rejections
+        self.use_rejected_buffer = use_rejected_buffer
+        self._rejected_buffer = RejectedBuffer(
+            max_size=rejected_buffer_max_size,
+            max_summary_chars=rejected_buffer_max_summary_chars,
+        )
+
+        # Soft score from last evaluate call (read by trainer)
+        self._last_evaluate_soft_score: float = 0.0
+
+        # Analysis failure count from last reflect call (read by trainer)
+        self._last_analysis_failures: int = 0
+
         # Cross-epoch runtime state
         self._meta_skill_content: str = ""
         self._prev_epoch_skill: str = ""
@@ -154,6 +189,10 @@ class SkillOptAlgorithm(BaseAlgorithm):
 
         # Step buffer context (accumulated within epoch)
         self._step_buffer_context: str = ""
+        self._step_buffer_entries: list[str] = []
+
+        # Analysis failure tracking (per epoch)
+        self._analysis_failure_count: int = 0
 
     # ── Training run init ─────────────────────────────────────────────
 
@@ -198,6 +237,9 @@ class SkillOptAlgorithm(BaseAlgorithm):
             "lr_mode": self.lr_mode,
             "meta_skill_content": self._meta_skill_content,
             "step_buffer_context": self._step_buffer_context,
+            "step_buffer_entries": self._step_buffer_entries,
+            "analysis_failure_count": self._analysis_failure_count,
+            "rejected_buffer": self._rejected_buffer.to_dict(),
         }
 
     def load_state_dict(self, state: dict) -> None:
@@ -206,6 +248,142 @@ class SkillOptAlgorithm(BaseAlgorithm):
             self._scheduler.load_state_dict(state["scheduler"])
         self._meta_skill_content = state.get("meta_skill_content", "")
         self._step_buffer_context = state.get("step_buffer_context", "")
+        self._step_buffer_entries = state.get("step_buffer_entries", [])
+        self._analysis_failure_count = state.get("analysis_failure_count", 0)
+        rb_data = state.get("rejected_buffer")
+        if rb_data:
+            self._rejected_buffer = RejectedBuffer.from_dict(rb_data)
+
+    # ── Rejected buffer hook ────────────────────────────────────────────
+
+    def record_rejection(
+        self,
+        step: int,
+        patch: Patch,
+        score_before: float,
+        score_after: float,
+        failure_patterns: list[dict] | None = None,
+    ) -> None:
+        """Record a rejected patch for future LLM context.
+
+        Called by the trainer after a gate ``reject`` decision.  When
+        ``use_rejected_buffer`` is enabled, the edit summary and
+        failure patterns are stored and will be injected into
+        subsequent Reflect / Aggregate prompts.
+
+        Parameters
+        ----------
+        step : int
+            Global step at which the rejection occurred.
+        patch : Patch
+            The selected patch whose candidate was rejected.
+        score_before : float
+            Current skill score before the update attempt.
+        score_after : float
+            Candidate score that was rejected.
+        failure_patterns : list[dict] | None
+            Extracted failure patterns from the rollout that produced
+            the rejected candidate.
+        """
+        if not self.use_rejected_buffer:
+            return
+        self._rejected_buffer.add(
+            step=step,
+            edits=patch.edits,
+            score_before=score_before,
+            score_after=score_after,
+            failure_patterns=failure_patterns,
+        )
+
+    # ── Step buffer accumulation ────────────────────────────────────────
+
+    def update_step_buffer(
+        self,
+        step: int,
+        *,
+        rollout_hard: float = 0.0,
+        rollout_soft: float = 0.0,
+        n_patches: int = 0,
+        n_analysis_failures: int = 0,
+        gate_action: str = "",
+        selected_edits: list[Edit] | None = None,
+        failure_summaries: list[FailureSummaryEntry] | None = None,
+        score_before: float = 0.0,
+        score_after: float = 0.0,
+    ) -> None:
+        """Accumulate one step's reflect outcome into the epoch-local step buffer.
+
+        Called by the trainer after the evaluate stage completes.  The
+        formatted context is injected into subsequent Reflect / Aggregate /
+        Select / Rewrite LLM prompts so the optimizer can see what happened
+        in earlier steps of the same epoch.
+
+        Aligns with official SkillOpt: the step buffer records per-step
+        rollout scores, patch counts, failure patterns, gate outcomes, and
+        applied edit summaries.
+
+        Parameters
+        ----------
+        step : int
+            Global step number.
+        rollout_hard : float
+            Hard accuracy from rollout.
+        rollout_soft : float
+            Soft accuracy from rollout.
+        n_patches : int
+            Number of raw patches produced by reflect.
+        n_analysis_failures : int
+            Number of minibatch LLM calls that failed during reflect.
+        gate_action : str
+            Gate decision ("accept", "accept_new_best", "reject").
+        selected_edits : list[Edit] | None
+            Edits that were selected and applied.
+        failure_summaries : list[FailureSummaryEntry] | None
+            Structured failure summaries from error analyst.
+        score_before : float
+            Current skill score before gate.
+        score_after : float
+            Candidate skill score from gate.
+        """
+        parts: list[str] = []
+        parts.append(
+            f"[Step {step}] rollout_hard={rollout_hard:.4f} "
+            f"rollout_soft={rollout_soft:.4f} "
+            f"patches={n_patches} "
+            f"analysis_failures={n_analysis_failures} "
+            f"gate={gate_action} "
+            f"score={score_before:.4f}→{score_after:.4f}"
+        )
+
+        # Failure summaries
+        if failure_summaries:
+            for fs in failure_summaries[:5]:  # cap at 5 per step
+                parts.append(
+                    f"  [failure_type={fs.failure_type}] "
+                    f"count={fs.count}: {fs.description[:120]}"
+                )
+
+        # Selected edits summary
+        if selected_edits:
+            for edit in selected_edits[:6]:  # cap at 6 per step
+                content_preview = edit.content[:80] if edit.content else ""
+                parts.append(f"  [edit] {edit.op}: {content_preview}")
+
+        entry = "\n".join(parts)
+        self._step_buffer_entries.append(entry)
+
+        # Rebuild the full context string
+        header = "## Previous Steps in This Epoch\n"
+        self._step_buffer_context = header + "\n\n".join(self._step_buffer_entries)
+
+        # Track analysis failures
+        self._analysis_failure_count += n_analysis_failures
+
+        logger.info(
+            "[STEP_BUFFER] step={} added (patches={} failures={} gate={} buffer_size={})",
+            step, n_patches, n_analysis_failures, gate_action,
+            len(self._step_buffer_entries),
+        )
 
     # ── Stage 1: Rollout ────────────────────────────────────────────────
 
@@ -241,21 +419,34 @@ class SkillOptAlgorithm(BaseAlgorithm):
         skill: str,
         out_dir: str,
     ) -> list[RawPatch]:
-        """Minibatch trajectory analysis → patches."""
+        """Minibatch trajectory analysis → patches.
+
+        Returns the list of raw patches.  The analysis failure count is
+        stored in ``self._last_analysis_failures`` for the trainer to read.
+        """
         patches_dir = os.path.join(out_dir, "patches")
         meta_ctx = format_meta_skill_context(self._meta_skill_content)
-        return await run_minibatch_reflect(
+        rb_ctx = (
+            self._rejected_buffer.format_context()
+            if self.use_rejected_buffer else ""
+        )
+        patches, n_analysis_failures = await run_minibatch_reflect(
             provider=self.provider,
             model=self.optimizer_model,
             results=results,
             skill_content=skill,
             patches_dir=patches_dir,
-            workers=self.workers,
+            workers=self.analyst_workers,
             minibatch_size=self.minibatch_size,
             edit_budget=self.edit_budget,
             update_mode=self.update_mode,
+            step_buffer_context=self._step_buffer_context,
             meta_skill_context=meta_ctx,
+            rejected_buffer_context=rb_ctx,
         )
+        # Expose for trainer to read
+        self._last_analysis_failures = n_analysis_failures
+        return patches
 
     # ── Stage 3: Aggregate ──────────────────────────────────────────────
 
@@ -277,6 +468,10 @@ class SkillOptAlgorithm(BaseAlgorithm):
                 failure_patches.append(d)
 
         meta_ctx = format_meta_skill_context(self._meta_skill_content)
+        rb_ctx = (
+            self._rejected_buffer.format_context()
+            if self.use_rejected_buffer else ""
+        )
         return await merge_patches(
             provider=self.provider,
             model=self.optimizer_model,
@@ -285,6 +480,8 @@ class SkillOptAlgorithm(BaseAlgorithm):
             success_patches=success_patches,
             update_mode=self.update_mode,
             meta_skill_context=meta_ctx,
+            workers=self.aggregate_workers,
+            rejected_buffer_context=rb_ctx,
         )
 
     # ── Stage 4: Select ─────────────────────────────────────────────────
@@ -395,15 +592,45 @@ class SkillOptAlgorithm(BaseAlgorithm):
     ) -> float:
         """Evaluate candidate skill on validation items.
 
-        Returns hard accuracy.
+        Returns hard accuracy.  Soft score is stored as
+        ``self._last_evaluate_soft_score`` for the trainer to read.
         """
+        self._last_evaluate_soft_score = 0.0
         logger.info("[6/6 EVALUATE] {} val items", len(items))
         results = await env.rollout_batch(items, skill, phase_label="6/6 EVALUATE")
         if not results:
             return 0.0
         hard_acc = sum(r.hard for r in results) / len(results)
-        logger.info("[6/6 EVALUATE] hard_acc={:.3f}", hard_acc)
+        soft_mean = sum(r.soft for r in results) / len(results)
+        self._last_evaluate_soft_score = soft_mean
+        logger.info("[6/6 EVALUATE] hard_acc={:.3f} soft_mean={:.3f}", hard_acc, soft_mean)
         return hard_acc
+
+    # ── Epoch hooks ────────────────────────────────────────────────────
+
+    def on_epoch_start(self, epoch: int) -> None:
+        """Clear epoch-local buffers at epoch start.
+
+        Aligns with the official SkillOpt paper: "The optimizer state
+        contains ... an **epoch-local** rejected-step buffer" and an
+        epoch-local step buffer that accumulates reflect outcomes.
+        """
+        if self.use_rejected_buffer and not self._rejected_buffer.is_empty():
+            logger.info(
+                "[REJECTED_BUFFER] clearing epoch-local buffer ({} entries) at epoch {}",
+                len(self._rejected_buffer), epoch,
+            )
+        self._rejected_buffer.clear()
+
+        # Clear epoch-local step buffer
+        if self._step_buffer_entries:
+            logger.info(
+                "[STEP_BUFFER] clearing epoch-local step buffer ({} entries) at epoch {}",
+                len(self._step_buffer_entries), epoch,
+            )
+        self._step_buffer_entries.clear()
+        self._step_buffer_context = ""
+        self._analysis_failure_count = 0
 
     # ── Epoch hook: Slow Update + Meta Skill ────────────────────────────
 

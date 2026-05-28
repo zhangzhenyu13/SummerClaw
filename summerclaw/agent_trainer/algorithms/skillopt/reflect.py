@@ -29,7 +29,7 @@ from typing import Any
 
 from loguru import logger
 
-from summerclaw.agent_trainer.types import Patch, RawPatch, RolloutResult
+from summerclaw.agent_trainer.types import FailureSummaryEntry, Patch, RawPatch, RolloutResult
 
 from .prompts_loader import resolve_prompt
 from .update_modes import (
@@ -271,6 +271,7 @@ async def run_error_analyst_minibatch(
     step_buffer_context: str = "",
     meta_skill_context: str = "",
     update_mode: str = "patch",
+    rejected_buffer_context: str = "",
 ) -> RawPatch | None:
     """Analyze a minibatch of failed trajectories in one LLM call.
 
@@ -294,6 +295,8 @@ async def run_error_analyst_minibatch(
         Cross-epoch optimizer memory context.
     update_mode : str
         One of "patch", "rewrite_from_suggestions", "full_rewrite_minibatch".
+    rejected_buffer_context : str
+        Formatted text of previously rejected edits for negative feedback.
     """
     mode = normalize_update_mode(update_mode)
     system = resolve_prompt(system_prompt, "error_analyst", mode)
@@ -307,8 +310,10 @@ async def run_error_analyst_minibatch(
     user += f"## Edit Budget\nProduce at most L={edit_budget} items.\n\n"
     if meta_skill_context.strip():
         user += f"## Optimizer Meta Skill\n{meta_skill_context}\n\n"
+    if rejected_buffer_context.strip():
+        user += f"{rejected_buffer_context}\n\n"
     if step_buffer_context.strip():
-        user += f"## Previous Steps in This Epoch\n{step_buffer_context}\n\n"
+        user += f"{step_buffer_context}\n\n"
     user += f"## Failed Trajectories ({len(results)} total)\n{trajectories_text}"
 
     max_tokens = 64000 if is_full_rewrite_minibatch_mode(mode) else 4096
@@ -317,12 +322,24 @@ async def run_error_analyst_minibatch(
         max_tokens=max_tokens, stage="reflect",
     )
     if not response:
+        # Analysis failure: LLM call failed — return None for caller to track
+        logger.warning(
+            "[REFLECT] error analyst LLM call failed for {} trajectories; "
+            "returning None (analysis_failure)",
+            len(results),
+        )
         return None
 
     result = _extract_json(response)
     if result:
         result = _normalize_response(result, pkey)
     if result and pkey in result:
+        # Parse failure_summary from LLM response (aligned with official)
+        failure_summary: list[FailureSummaryEntry] = []
+        for fs_dict in result.get("failure_summary", []):
+            if isinstance(fs_dict, dict):
+                failure_summary.append(FailureSummaryEntry.from_dict(fs_dict))
+
         return RawPatch(
             patch=Patch.from_dict({
                 "reasoning": result.get("reasoning", ""),
@@ -330,7 +347,15 @@ async def run_error_analyst_minibatch(
             }),
             source_type="failure",
             batch_size=result.get("batch_size", len(results)),
+            failure_summary=failure_summary,
         )
+
+    # Analysis failure: JSON parse failed or missing payload key
+    logger.warning(
+        "[REFLECT] error analyst returned unparseable response for {} trajectories; "
+        "analysis_failure",
+        len(results),
+    )
     return None
 
 
@@ -345,6 +370,7 @@ async def run_success_analyst_minibatch(
     step_buffer_context: str = "",
     meta_skill_context: str = "",
     update_mode: str = "patch",
+    rejected_buffer_context: str = "",
 ) -> RawPatch | None:
     """Analyze a minibatch of successful trajectories in one LLM call.
 
@@ -362,8 +388,10 @@ async def run_success_analyst_minibatch(
     user += f"## Edit Budget\nProduce at most L={edit_budget} items.\n\n"
     if meta_skill_context.strip():
         user += f"## Optimizer Meta Skill\n{meta_skill_context}\n\n"
+    if rejected_buffer_context.strip():
+        user += f"{rejected_buffer_context}\n\n"
     if step_buffer_context.strip():
-        user += f"## Previous Steps in This Epoch\n{step_buffer_context}\n\n"
+        user += f"{step_buffer_context}\n\n"
     user += f"## Successful Trajectories ({len(results)} total)\n{trajectories_text}"
 
     max_tokens = 64000 if is_full_rewrite_minibatch_mode(mode) else 4096
@@ -372,6 +400,11 @@ async def run_success_analyst_minibatch(
         max_tokens=max_tokens, stage="reflect",
     )
     if not response:
+        logger.warning(
+            "[REFLECT] success analyst LLM call failed for {} trajectories; "
+            "returning None (analysis_failure)",
+            len(results),
+        )
         return None
 
     result = _extract_json(response)
@@ -386,6 +419,12 @@ async def run_success_analyst_minibatch(
             source_type="success",
             batch_size=result.get("batch_size", len(results)),
         )
+
+    logger.warning(
+        "[REFLECT] success analyst returned unparseable response for {} trajectories; "
+        "analysis_failure",
+        len(results),
+    )
     return None
 
 
@@ -410,7 +449,8 @@ async def run_minibatch_reflect(
     step_buffer_context: str = "",
     meta_skill_context: str = "",
     update_mode: str = "patch",
-) -> list[RawPatch]:
+    rejected_buffer_context: str = "",
+) -> tuple[list[RawPatch], int]:
     """Full minibatch reflect stage: group -> parallel LLM calls -> patches.
 
     Separates failure/success trajectories, splits each into minibatches,
@@ -422,6 +462,14 @@ async def run_minibatch_reflect(
         Cross-epoch optimizer memory context.
     update_mode : str
         One of "patch", "rewrite_from_suggestions", "full_rewrite_minibatch".
+    rejected_buffer_context : str
+        Formatted text of previously rejected edits for negative feedback.
+
+    Returns
+    -------
+    tuple[list[RawPatch], int]
+        The list of successful patches and the count of analysis failures
+        (minibatch LLM calls that returned None).
     """
     os.makedirs(patches_dir, exist_ok=True)
 
@@ -430,6 +478,8 @@ async def run_minibatch_reflect(
 
     fail_batches = _split_minibatches(failures, minibatch_size)
     succ_batches = _split_minibatches(successes, minibatch_size)
+
+    total_minibatches = len(fail_batches) + len(succ_batches)
 
     logger.info(
         "[REFLECT minibatch] failure={}→{} groups  success={}→{} groups  (M={}, L={}, mode={})",
@@ -449,6 +499,7 @@ async def run_minibatch_reflect(
                 step_buffer_context=step_buffer_context,
                 meta_skill_context=meta_skill_context,
                 update_mode=update_mode,
+                rejected_buffer_context=rejected_buffer_context,
             )
             if patch:
                 path = os.path.join(patches_dir, f"minibatch_fail_{idx:03d}.json")
@@ -465,6 +516,7 @@ async def run_minibatch_reflect(
                 step_buffer_context=step_buffer_context,
                 meta_skill_context=meta_skill_context,
                 update_mode=update_mode,
+                rejected_buffer_context=rejected_buffer_context,
             )
             if patch:
                 path = os.path.join(patches_dir, f"minibatch_succ_{idx:03d}.json")
@@ -479,4 +531,29 @@ async def run_minibatch_reflect(
         tasks.append(_do_succ(idx, batch))
 
     raw_results = await asyncio.gather(*tasks)
-    return [p for p in raw_results if p is not None]
+
+    # Separate successes from failures and count analysis failures
+    patches: list[RawPatch] = []
+    n_analysis_failures = 0
+    for p in raw_results:
+        if p is not None:
+            patches.append(p)
+        else:
+            n_analysis_failures += 1
+
+    # Log analysis failure summary
+    if n_analysis_failures > 0:
+        logger.warning(
+            "[REFLECT] analysis_failure: {}/{} minibatch LLM calls failed "
+            "(success_rate={:.0%})",
+            n_analysis_failures, total_minibatches,
+            (total_minibatches - n_analysis_failures) / max(total_minibatches, 1),
+        )
+    if total_minibatches > 0 and n_analysis_failures == total_minibatches:
+        logger.error(
+            "[REFLECT] ALL {} minibatch analyses failed — step will produce "
+            "no patches; this likely indicates a systemic LLM issue",
+            total_minibatches,
+        )
+
+    return patches, n_analysis_failures

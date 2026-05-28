@@ -403,7 +403,7 @@
   "gateway": {
     "host": "127.0.0.1",
     "port": 18790,
-    "dashboard_port": 7860,
+    "dashboard_port": 443,
     "heartbeat": {
       "enabled": true,
       "intervalS": 1800,

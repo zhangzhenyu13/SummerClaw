@@ -520,6 +520,7 @@ class MastraOMConsolidator:
                 estimated, source = 0, "error"
             if estimated <= 0:
                 await self.reflect_and_condense()
+                await self._run_recall_judgement(session)
                 return
 
             # ── Async buffering check (before sync threshold) ──────────
@@ -567,6 +568,7 @@ class MastraOMConsolidator:
                     # Budget is fine and body is small enough, but still
                     # check if OBSERVATIONS.md itself needs reflection.
                     await self.reflect_and_condense()
+                    await self._run_recall_judgement(session)
                     return
                 logger.warning(
                     "MastraOM: token budget OK ({} {} {}), but body ~{} bytes "
@@ -662,6 +664,38 @@ class MastraOMConsolidator:
                 # OBSERVATIONS.md must never grow unbounded.
                 if not _reflected:
                     await self.reflect_and_condense()
+
+        # ── Auto-recall: judge which observation cycles are relevant ──
+        await self._run_recall_judgement(session)
+
+    async def _run_recall_judgement(self, session: "Session") -> None:
+        """Run LLM-judged recall to populate store._recalled_entries_cache.
+
+        Called at the end of maybe_consolidate_by_tokens on all paths.
+        Silently no-ops if recall is disabled or observations are empty.
+        """
+        config = getattr(self.store, "_recall_config", None)
+        if not config or not config.enabled:
+            return
+        if not self.store.read_observations():
+            return
+
+        from summerclaw.memory.mastra_om_memory.recall import judge_and_recall
+
+        try:
+            await asyncio.wait_for(
+                judge_and_recall(
+                    self.store, self.provider, self.model, session, config,
+                ),
+                timeout=config.timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[OM:recall] recall judgement timed out after {}s",
+                config.timeout_seconds,
+            )
+        except Exception:
+            logger.warning("[OM:recall] recall judgement failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # extract_and_store (Hermes-Autogen integration)

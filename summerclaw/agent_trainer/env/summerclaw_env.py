@@ -26,6 +26,11 @@ import importlib.util
 import os
 import re
 import uuid
+
+# Regex for extracting content inside <answer>...</answer> tags.
+# Used by both exact_match and llm_judge scorers to normalize predicted
+# output and candidate answers before comparison.
+_ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 from pathlib import Path
 from typing import Any, Callable
 
@@ -129,6 +134,42 @@ def _register_all_memory_algorithms(registry: MemoryRegistry) -> None:
             pass  # already registered or unavailable
 
 
+class _NullMemoryStore:
+    """No-op memory store used when memory algorithm is disabled (null).
+
+    All reads return empty strings / empty lists, so ``ContextBuilder``
+    builds a system prompt containing only identity + bootstrap files +
+    skills — no memory section and no recent history.
+
+    The conversation context (tool loop) is independently bounded by
+    ``max_tool_iterations`` which is set to 20 when memory is disabled.
+    """
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+        # Point to a non-existent file so ContextBuilder's
+        # _is_template_content check treats memory as empty.
+        self.memory_file = workspace / "memory" / ".null" / "MEMORY.md"
+
+    def get_memory_context(self) -> str:
+        return ""
+
+    def read_memory(self) -> str:
+        return ""
+
+    def read_unprocessed_history(self, since_cursor: int = 0) -> list:
+        return []
+
+    def get_last_dream_cursor(self) -> int:
+        return 0
+
+    def read_user(self) -> str:
+        return ""
+
+    def read_soul(self) -> str:
+        return ""
+
+
 def _strip_frontmatter(content: str) -> str:
     """Remove YAML frontmatter from markdown content."""
     if not content.startswith("---"):
@@ -158,7 +199,7 @@ class SummerClawEnvAdapter:
         max_tool_result_chars: int = 16000,
         temperature: float = 0.1,
         max_tokens: int = 8192,
-        workers: int = 4,
+        workers: int = 0,
         tool_registry: ToolRegistry | None = None,
     ):
         """Initialize the environment adapter with isolated workspace.
@@ -187,6 +228,8 @@ class SummerClawEnvAdapter:
             Max completion tokens (same as online agent).
         workers : int
             Max concurrent rollout workers.
+            ``0`` (default) = auto-derive as 80%% of the provider's
+            ``max_concurrency`` (min 1, fallback 4).
         tool_registry : ToolRegistry | None
             Pre-built tool registry. If None, builds a default one.
         """
@@ -198,11 +241,25 @@ class SummerClawEnvAdapter:
         self._memory_algorithm_name = memory_algorithm_name
 
         self.context_window_tokens = context_window_tokens
-        self.max_tool_iterations = max_tool_iterations
+        # When memory is disabled, bound the tool loop to the last 20 turns
+        # (matching the "only recent 20 conversation turns" semantics).
+        if not memory_algorithm_name or memory_algorithm_name.lower() in ("null", "none"):
+            self.max_tool_iterations = min(max_tool_iterations, 20)
+            logger.debug("Memory disabled: max_tool_iterations capped at {}", self.max_tool_iterations)
+        else:
+            self.max_tool_iterations = max_tool_iterations
         self.max_tool_result_chars = max_tool_result_chars
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.workers = workers
+        # workers: 0 = auto-derive 80% of provider.max_concurrency
+        if workers <= 0:
+            provider_max = getattr(provider, "max_concurrency", 0) or 0
+            if provider_max > 0:
+                self.workers = max(1, int(provider_max * 0.8))
+            else:
+                self.workers = 4  # safe fallback
+        else:
+            self.workers = workers
 
         # Per-item rollout timeout (seconds).  A single rollout may involve
         # multiple LLM calls (ReACT tool loop).  120s is generous for simple
@@ -216,11 +273,20 @@ class SummerClawEnvAdapter:
         self._mem: MemoryComponents | None = None
         self._context: ContextBuilder | None = None
 
+        # Eval read-only mode: temporarily swaps in NullMemoryStore during
+        # test/val evaluation so no memory content is written.
+        self._eval_readonly: bool = False
+        self._saved_mem: MemoryComponents | None = None
+        self._saved_context: ContextBuilder | None = None
+
         # 3. Build tool registry (consistent with online agent)
         self._tools = tool_registry or ToolRegistry()
 
         # 4. Build runner
         self._runner = AgentRunner(provider)
+
+        # Save original tool registry for filtering
+        self._original_tools = self._tools
 
         # 5. Custom scorer cache (loaded lazily when scorer='custom')
         self._custom_scorer_fn: Callable[[dict, str], float] | None = None
@@ -231,7 +297,18 @@ class SummerClawEnvAdapter:
         Memory algorithm type matches the online agent, but data is stored
         in the training workspace directory.
         Hermes/dream are NOT activated for the training agent.
+
+        When *algorithm_name* is empty, ``"null"`` or ``"none"`` (case-insensitive),
+        memory is fully disabled — returns a ``MemoryComponents`` with all fields
+        set to ``None``.
         """
+        # Handle disabled memory
+        if not algorithm_name or algorithm_name.lower() in ("null", "none"):
+            logger.info("Memory algorithm disabled — skipping memory build")
+            # Use _NullMemoryStore so ContextBuilder doesn't fall back to a real MemoryStore
+            null_store = _NullMemoryStore(self.train_workspace)
+            return MemoryComponents(store=null_store, consolidator=None, dream=None, auto_compact=None)
+
         registry = MemoryRegistry()
         _register_all_memory_algorithms(registry)
 
@@ -306,6 +383,77 @@ class SummerClawEnvAdapter:
         )
         self._workspace_ready = True
         logger.debug("Training workspace ensured: {}", self.train_workspace)
+
+    def reconfigure_for_task(
+        self,
+        memory_algorithm_name: str | None,
+        enabled_tools: list[str] | None,
+    ) -> None:
+        """Reconfigure memory algorithm and tool set for a specific task.
+
+        Called by ``_apply_yaml_to_engine`` before training starts so that
+        the task's YAML-configured ``memory_algorithm`` and ``enabled_tools``
+        take effect instead of the agent defaults.
+
+        Parameters
+        ----------
+        memory_algorithm_name : str | None
+            Algorithm name from YAML.  ``None``, ``"null"``, ``"none"`` or
+            empty string all disable memory.
+        enabled_tools : list[str] | None
+            List of tool names to keep.  ``None`` or empty list means keep
+            all tools from the original registry.
+        """
+        # Normalize memory algorithm name
+        normalized = (
+            "null"
+            if memory_algorithm_name in (None, "", "null", "none")
+            else str(memory_algorithm_name)
+        )
+        if normalized != self._memory_algorithm_name:
+            logger.info(
+                "Reconfiguring memory: {} → {}",
+                self._memory_algorithm_name, normalized,
+            )
+            self._memory_algorithm_name = normalized
+            # Reset workspace so memory is rebuilt with new algorithm
+            self._workspace_ready = False
+            self._mem = None
+            self._context = None
+            # Re-apply max_tool_iterations cap
+            if normalized == "null":
+                self.max_tool_iterations = min(self.max_tool_iterations, 20)
+            # (Don't increase it back if previously capped — the original
+            #  value is unknown after cap; the caller can set it explicitly.)
+        else:
+            logger.info("Memory algorithm: {} (unchanged)", normalized)
+
+        # Filter tools
+        all_tool_names = sorted(self._original_tools.tool_names)
+        if enabled_tools is not None and len(enabled_tools) > 0:
+            filtered = ToolRegistry()
+            found: list[str] = []
+            skipped: list[str] = []
+            for name in enabled_tools:
+                tool = self._original_tools.get(name)
+                if tool is not None:
+                    filtered.register(tool)
+                    found.append(name)
+                else:
+                    skipped.append(name)
+            self._tools = filtered
+            logger.info(
+                "Enabled tools ({}/{}): [{}]",
+                len(found), len(all_tool_names), ", ".join(found),
+            )
+            if skipped:
+                logger.warning("Tools not found in registry, skipped: [{}]", ", ".join(skipped))
+        else:
+            self._tools = self._original_tools
+            logger.info(
+                "Using all tools ({}): [{}]",
+                len(all_tool_names), ", ".join(all_tool_names),
+            )
 
     def _build_system_prompt(self, skill_content: str) -> str:
         """Build system prompt with isolated memory + injected skill content."""
@@ -412,7 +560,7 @@ class SummerClawEnvAdapter:
             )
 
         # Score the result
-        hard, soft = self.score_result(result, item)
+        hard, soft = await self.score_result(result, item)
 
         # Extract trajectory from messages
         trajectory = result.messages or []
@@ -445,16 +593,36 @@ class SummerClawEnvAdapter:
     ) -> list[RolloutResult]:
         """Execute a batch of rollouts with controlled concurrency.
 
+        Concurrency priority:
+          1. ``SUMMERCLAW_DEBUG_LLM=1``  → serial (workers=1)
+          2. ``self.workers``            → trainer-specific setting
+             (defaults to 80%% of provider's ``maxConcurrency``)
+          3. provider ``max_concurrency`` → global system setting
+          4. fallback: 4
+
         Logs progress as each item completes so the dashboard can show
         that evaluation / rollout is still making progress.
         """
         import os as _os
         # Force serial execution when debug mode is on
         debug = _os.environ.get("SUMMERCLAW_DEBUG_LLM")
-        effective_workers = 1 if debug else self.workers
+        if debug:
+            effective_workers = 1
+        elif self.workers > 0:
+            # self.workers takes priority (trainer-specific, default 80% of maxConcurrency)
+            effective_workers = self.workers
+        else:
+            provider_max = getattr(self.provider, "max_concurrency", 0) or 0
+            effective_workers = provider_max if provider_max > 0 else 4
         semaphore = asyncio.Semaphore(effective_workers)
-        if effective_workers == 1:
+        if debug:
             logger.warning("[DEBUG] rollout_batch running with workers=1 (serial mode)")
+        else:
+            source = "trainer-workers" if self.workers > 0 else "provider-maxConcurrency"
+            logger.info(
+                "[{}] rollout_batch concurrency={} ({})",
+                phase_label, effective_workers, source,
+            )
         total = len(items)
         done_count = 0
         lock = asyncio.Lock()
@@ -501,6 +669,42 @@ class SummerClawEnvAdapter:
 
         return await asyncio.gather(*[_run_one(item) for item in items])
 
+    def _set_eval_readonly(self) -> None:
+        """Switch to a no-op memory store for test/val evaluation.
+
+        Prevents any memory writes (and reads) during evaluation so the
+        memory store is not polluted with eval artifacts.  Call
+        :meth:`_clear_eval_readonly` to restore the original store.
+        """
+        if self._eval_readonly:
+            return  # already in eval mode
+        if self._mem is None or isinstance(self._mem.store, _NullMemoryStore):
+            return  # no real store to protect
+        self._saved_mem = self._mem
+        self._saved_context = self._context
+        null_store = _NullMemoryStore(self.train_workspace)
+        self._mem = MemoryComponents(
+            store=null_store, consolidator=None, dream=None, auto_compact=None,
+        )
+        self._context = ContextBuilder(
+            self.train_workspace, memory_store=null_store,
+        )
+        self._eval_readonly = True
+        logger.info("[EVAL] memory switched to read-only (NullMemoryStore)")
+
+    def _clear_eval_readonly(self) -> None:
+        """Restore the original memory store after evaluation."""
+        if not self._eval_readonly:
+            return
+        if self._saved_mem is not None:
+            self._mem = self._saved_mem
+            self._saved_mem = None
+        if self._saved_context is not None:
+            self._context = self._saved_context
+            self._saved_context = None
+        self._eval_readonly = False
+        logger.info("[EVAL] memory restored to original store")
+
     def _load_custom_scorer(self) -> Callable[[dict, str], float] | None:
         """Load custom-scorer.py from the training output directory.
 
@@ -535,36 +739,153 @@ class SummerClawEnvAdapter:
             logger.error("Failed to load custom-scorer.py: {}", exc)
             return None
 
+    # ------------------------------------------------------------------
+    # Answer-tag parsing helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_answer_content(text: str) -> str:
+        """Extract the inner content from ``<answer>...</answer>`` tags.
+
+        If one or more ``<answer>`` tags are found, their inner text is
+        returned (joined by newline for multiple tags).  Otherwise the
+        original ``text`` is returned unchanged — this keeps backward
+        compatibility for data that does not use the tag convention.
+        """
+        matches = _ANSWER_TAG_RE.findall(text)
+        if matches:
+            return "\n".join(m.strip() for m in matches)
+        return text.strip()
+
+    # ------------------------------------------------------------------
+    # Scoring implementations
+    # ------------------------------------------------------------------
+
     def _score_exact_match(self, predicted: str, answers: list[str]) -> tuple[int, float]:
         """Score by checking predicted against any candidate answer.
 
+        Both ``predicted`` and each candidate answer are first parsed for
+        ``<answer>...</answer>`` tags; the inner content is used for
+        comparison so that surrounding boilerplate does not interfere.
+
         Returns (hard: 0/1, soft: 0.0-1.0).
         """
-        predicted_lower = predicted.strip().lower()
+        # Normalize predicted: prefer tag-extracted content, else raw text
+        pred_text = self._extract_answer_content(predicted).strip().lower()
+        if not pred_text:
+            pred_text = predicted.strip().lower()
+
         if not answers:
-            has_output = bool(predicted_lower)
+            has_output = bool(pred_text)
             return (1 if has_output else 0, 0.5 if has_output else 0.0)
 
         best_soft = 0.0
         for ans in answers:
-            ans_lower = str(ans).strip().lower()
-            if not ans_lower:
+            # Normalize candidate answer: prefer tag-extracted content
+            ans_text = self._extract_answer_content(str(ans)).strip().lower()
+            if not ans_text:
                 continue
-            # Exact substring match
-            if ans_lower in predicted_lower:
+
+            # Exact substring match (extracted content in extracted predicted)
+            if ans_text in pred_text:
                 return (1, 1.0)
-            # Word overlap
-            ans_words = set(ans_lower.split())
-            predicted_words = set(predicted_lower.split())
+
+            # Also try raw substring match as a fallback (tag-wrapped answer
+            # inside raw predicted, or vice versa)
+            if str(ans).strip().lower() in predicted.strip().lower():
+                return (1, 1.0)
+
+            # Word overlap on extracted content
+            ans_words = set(ans_text.split())
+            pred_words = set(pred_text.split())
             if ans_words:
-                overlap = ans_words & predicted_words
+                overlap = ans_words & pred_words
                 soft = len(overlap) / len(ans_words)
                 best_soft = max(best_soft, soft)
 
         hard = 1 if best_soft >= 0.8 else 0
         return (hard, best_soft)
 
-    def score_result(
+    async def _score_llm_judge(
+        self, predicted: str, answers: list[str], question: str = "",
+    ) -> tuple[int, float]:
+        """Use the LLM to judge whether ``predicted`` matches any candidate.
+
+        Both predicted and candidate answers are first parsed for
+        ``<answer>...</answer>`` tags so the LLM only sees the core content.
+
+        Returns (hard: 0/1, soft: 0.0-1.0).
+        """
+        pred_text = self._extract_answer_content(predicted) or predicted.strip()
+        if not pred_text:
+            return (0, 0.0)
+
+        if not answers:
+            has_output = bool(pred_text)
+            return (1 if has_output else 0, 0.5 if has_output else 0.0)
+
+        # Build candidate list for the judge prompt
+        candidates = []
+        for ans in answers:
+            c = self._extract_answer_content(str(ans)) or str(ans).strip()
+            if c:
+                candidates.append(c)
+        if not candidates:
+            return (0, 0.0)
+
+        candidates_str = "\n".join(f"  - {c}" for c in candidates)
+        question_ctx = f"\nQuestion: {question}" if question else ""
+
+        judge_prompt = (
+            "You are a strict answer judge.\n"
+            f"{question_ctx}\n\n"
+            f"Predicted answer:\n  {pred_text}\n\n"
+            f"Accepted candidate answers (any one is correct):\n{candidates_str}\n\n"
+            "Decide if the predicted answer is semantically equivalent to "
+            "ANY of the candidate answers. Minor wording differences are "
+            "acceptable as long as the core meaning / value is the same.\n\n"
+            "Reply with ONLY a JSON object in the format:\n"
+            '{"match": true/false, "confidence": 0.0-1.0, "reason": "..."}\n'
+            "Do not include any other text."
+        )
+
+        messages = [{"role": "user", "content": judge_prompt}]
+        try:
+            resp = await self.provider.chat_with_retry(
+                messages=messages,
+                model=self.model,
+                temperature=0.0,
+                max_tokens=256,
+            )
+            content = (resp.content or "").strip()
+            # Parse the JSON response
+            import json as _json
+            # Try to find JSON in the response (strip markdown fences if present)
+            json_str = content
+            if "```" in json_str:
+                # Extract between ```json ... ``` or ``` ... ```
+                m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", json_str, re.DOTALL)
+                if m:
+                    json_str = m.group(1).strip()
+            data = _json.loads(json_str)
+            match = bool(data.get("match", False))
+            confidence = float(data.get("confidence", 1.0 if match else 0.0))
+            confidence = max(0.0, min(1.0, confidence))
+            reason = data.get("reason", "")
+            logger.debug(
+                "llm_judge result: match={} confidence={} reason={}",
+                match, confidence, reason,
+            )
+            hard = 1 if match else 0
+            soft = confidence if match else confidence * 0.3
+            return (hard, soft)
+        except Exception as exc:
+            logger.warning(
+                "llm_judge LLM call failed: {} — falling back to exact_match", exc,
+            )
+            return self._score_exact_match(predicted, answers)
+
+    async def score_result(
         self,
         result: AgentRunResult,
         item: dict,
@@ -574,8 +895,10 @@ class SummerClawEnvAdapter:
         Returns (hard: 0/1, soft: 0.0-1.0).
 
         Scoring methods:
-        - exact_match (default): case-insensitive substring match against any answer
-        - llm_judge: TODO (falls back to exact_match)
+        - exact_match (default): parses <answer> tags then does
+          case-insensitive substring / word-overlap matching
+        - llm_judge: uses the LLM to semantically judge predicted vs
+          candidate answers (falls back to exact_match on failure)
         - custom: loads custom-scorer.py from train_out_dir
         """
         predicted = (result.final_content or "").strip()
@@ -605,8 +928,9 @@ class SummerClawEnvAdapter:
             # Fallback if custom scorer unavailable
             return self._score_exact_match(predicted, answers)
 
-        # llm_judge: TODO — fall back to exact_match
+        # llm_judge: LLM-based semantic scoring
         if scorer == "llm_judge":
-            logger.debug("llm_judge not yet implemented — falling back to exact_match")
+            question = item.get("question", "")
+            return await self._score_llm_judge(predicted, answers, question=question)
 
         return self._score_exact_match(predicted, answers)

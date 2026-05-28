@@ -5,7 +5,9 @@ import itertools
 import json
 import os
 import re
+import threading
 import time
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
@@ -92,6 +94,48 @@ class GenerationSettings:
 _SYNTHETIC_USER_CONTENT = "(conversation continued)"
 
 
+class _CrossLoopSemaphore:
+    """Async context manager that limits concurrency across event loops.
+
+    ``asyncio.Semaphore`` binds to a single event loop, so sharing one
+    ``LLMProvider`` across threads (each with its own loop) fails with
+    *"bound to a different event loop"*.
+
+    This implementation uses a ``threading.Lock`` (nanosecond-scale) for
+    the shared counter and per-loop ``asyncio.Queue`` instances for async
+    notification — no thread-pool workers are consumed while waiting.
+    """
+
+    __slots__ = ("_value", "_lock", "_queues")
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+        self._lock = threading.Lock()
+        self._queues: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, asyncio.Queue
+        ] = weakref.WeakKeyDictionary()
+
+    async def __aenter__(self) -> "_CrossLoopSemaphore":
+        loop = asyncio.get_running_loop()
+        queue = self._queues.get(loop)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._queues[loop] = queue
+        while True:
+            with self._lock:
+                if self._value > 0:
+                    self._value -= 1
+                    return self
+            await queue.get()
+
+    async def __aexit__(self, *exc: object) -> None:
+        with self._lock:
+            self._value += 1
+        for lp, q in list(self._queues.items()):
+            if not lp.is_closed():
+                lp.call_soon_threadsafe(q.put_nowait, None)
+
+
 class LLMProvider(ABC):
     """Base class for LLM providers."""
 
@@ -167,27 +211,33 @@ class LLMProvider(ABC):
         self.api_base = api_base
         self.generation: GenerationSettings = GenerationSettings()
         self.max_concurrency: int = 20
-        self._concurrency_semaphore: asyncio.Semaphore | None = None
+        self._concurrency_semaphore: _CrossLoopSemaphore | None = None
+        self._semaphore_max: int = -1
 
-    def _get_concurrency_semaphore(self) -> asyncio.Semaphore | None:
+    def _get_concurrency_semaphore(self) -> _CrossLoopSemaphore | None:
         """Return a shared semaphore for limiting concurrent LLM API calls.
 
         Returns ``None`` when ``max_concurrency <= 0`` (unlimited).
         The semaphore is created lazily on first access so that
         ``max_concurrency`` can be changed after construction.
 
+        Uses ``threading.Semaphore`` internally so the same instance
+        works correctly across multiple asyncio event loops (e.g. when
+        training runs in a background thread).
+
         When ``SUMMERCLAW_DEBUG_LLM=1``, forces concurrency to 1 so that
         requests are serialized and easier to trace in logs.
         """
         if os.environ.get("SUMMERCLAW_DEBUG_LLM"):
-            if self._concurrency_semaphore is None or self.max_concurrency != 1:
-                self.max_concurrency = 1
-                self._concurrency_semaphore = asyncio.Semaphore(1)
+            if self._concurrency_semaphore is None or self._semaphore_max != 1:
+                self._semaphore_max = 1
+                self._concurrency_semaphore = _CrossLoopSemaphore(1)
             return self._concurrency_semaphore
         if self.max_concurrency <= 0:
             return None
-        if self._concurrency_semaphore is None:
-            self._concurrency_semaphore = asyncio.Semaphore(self.max_concurrency)
+        if self._concurrency_semaphore is None or self._semaphore_max != self.max_concurrency:
+            self._semaphore_max = self.max_concurrency
+            self._concurrency_semaphore = _CrossLoopSemaphore(self.max_concurrency)
         return self._concurrency_semaphore
 
     @staticmethod

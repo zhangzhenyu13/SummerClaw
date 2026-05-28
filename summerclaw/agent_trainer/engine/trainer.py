@@ -258,6 +258,7 @@ class TrainerEngine:
         edit_budget: int = 4,
         seed: int = 42,
         workers: int = 4,
+        eval_test: bool = True,
     ):
         self.algorithm = algorithm
         self.env = env
@@ -271,6 +272,7 @@ class TrainerEngine:
         self.edit_budget = edit_budget
         self.seed = seed
         self.workers = workers
+        self.eval_test = eval_test
 
         # Runtime state
         self._current_skill = skill_init
@@ -282,6 +284,7 @@ class TrainerEngine:
         self._progress_cb: ProgressCallback | None = None
         self._running = False
         self._cancel_requested = False
+        self._run_id: str | None = None  # Unique per training run (UUID)
 
         # Event log (shared with dashboard for log streaming)
         self._events: list[dict] = []
@@ -303,6 +306,11 @@ class TrainerEngine:
         self._current_origin: str = "initial_skill"
         self._best_origin: str = "initial_skill"
 
+        # Skill hash cache (aligned with official SkillOpt paper:
+        # "cached skill hashes" — skip rollout evaluation when candidate
+        # skill hash matches a previously seen skill).
+        self._skill_cache: dict[str, float] = {}
+
     # ── Properties ────────────────────────────────────────────────────
 
     @property
@@ -322,8 +330,16 @@ class TrainerEngine:
         return self._best_score
 
     @property
+    def baseline_score(self) -> float:
+        return self._baseline_score
+
+    @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def run_id(self) -> str | None:
+        return self._run_id
 
     # ── Callbacks ─────────────────────────────────────────────────────
 
@@ -496,7 +512,10 @@ class TrainerEngine:
         if hasattr(self.env, "train_workspace"):
             self.env.train_workspace = task_dir
             self.env._workspace_ready = False
-        # Try restoring data loader from uploaded_data
+        # Try restoring data loader from uploaded_data.
+        # Clear stale data_loader from a different task to prevent
+        # cross-task data leakage (has_data() would otherwise return True
+        # for the wrong data).
         uploaded = task_dir / "uploaded_data"
         if uploaded.is_dir():
             from summerclaw.agent_trainer.datasets.loader import DataLoader
@@ -506,6 +525,10 @@ class TrainerEngine:
                 logger.info(
                     "Restored data from {}: {}", uploaded, loader.summary(),
                 )
+            else:
+                self.data_loader = None
+        else:
+            self.data_loader = None
         # Restore event log
         log_path = task_dir / "training_log.jsonl"
         if log_path.exists():
@@ -568,7 +591,10 @@ class TrainerEngine:
         _save_skill(str(self.out_dir / "best_skill.md"), self._best_skill)
 
         _save_json(str(self.out_dir / "history.json"), self._history.to_dict())
-        _save_json(str(self.out_dir / "runtime_state.json"), {
+
+        # Merge with existing runtime_state to preserve status/run_id/heartbeat
+        _existing = _load_json(str(self.out_dir / "runtime_state.json")) or {}
+        _state: dict = {
             "last_completed_step": step,
             "last_completed_epoch": self._last_completed_epoch,
             "current_score": self._current_score,
@@ -578,9 +604,19 @@ class TrainerEngine:
             "skill_init_resolved": self._skill_init_resolved,
             "current_origin": self._current_origin,
             "best_origin": self._best_origin,
+            "skill_hash_cache": self._skill_cache,
             "current_skill_path": str(skills_dir / f"skill_v{step:04d}.md"),
             "best_skill_path": str(self.out_dir / "best_skill.md"),
-        })
+            # Preserve running-status fields written by train()
+            "status": _existing.get("status", ""),
+            "run_id": _existing.get("run_id", self._run_id or ""),
+            "heartbeat_ts": time.time(),  # Update heartbeat on every checkpoint
+        }
+        # Preserve timing fields if they exist
+        for _k in ("started_at", "finished_at", "total_wall_time_s"):
+            if _k in _existing:
+                _state[_k] = _existing[_k]
+        _save_json(str(self.out_dir / "runtime_state.json"), _state)
 
         # Save algorithm state (scheduler, meta_skill, etc.)
         if hasattr(self.algorithm, 'state_dict'):
@@ -638,6 +674,11 @@ class TrainerEngine:
         self._skill_init_resolved = bool(state.get("skill_init_resolved", False))
         self._current_origin = str(state.get("current_origin", "initial_skill"))
         self._best_origin = str(state.get("best_origin", "initial_skill"))
+
+        # Restore skill hash cache (aligned with official SkillOpt)
+        self._skill_cache = state.get("skill_hash_cache", {})
+        if self._skill_cache:
+            logger.info("Restored skill hash cache ({} entries)", len(self._skill_cache))
 
         # Load skills
         curr_path = state.get("current_skill_path", "")
@@ -720,16 +761,27 @@ class TrainerEngine:
         self._ensure_out_dir()
         self._running = True
         self._cancel_requested = False
+        import uuid as _uuid
+        self._run_id = str(_uuid.uuid4())
         t_start = time.time()
+        # Record start timestamp for runtime tracking
+        import datetime as _dt_mod
+        train_started_at = _dt_mod.datetime.now().isoformat()
+
+        # Persist "running" status with run_id so crash detection works
+        _rs = _load_json(str(self.out_dir / "runtime_state.json")) or {}
+        _rs["status"] = "running"
+        _rs["run_id"] = self._run_id
+        _rs["heartbeat_ts"] = time.time()
+        _rs["started_at"] = train_started_at
+        _save_json(str(self.out_dir / "runtime_state.json"), _rs)
 
         # Bridge algorithm logs → dashboard event stream
         self._install_log_sink()
 
-        if not self.data_loader:
-            self._uninstall_log_sink()
-            raise RuntimeError("No data loader set. Upload data before starting training.")
-
         try:
+            if not self.data_loader:
+                raise RuntimeError("No data loader set. Upload data before starting training.")
             # Emit init phase
             self._emit("init", {
                 "algorithm": self.algorithm.name,
@@ -780,6 +832,11 @@ class TrainerEngine:
                 _val_items = len(self.data_loader.val.items)
             except (KeyError, AttributeError):
                 pass
+            _test_items = 0
+            try:
+                _test_items = len(self.data_loader.test.items)
+            except (KeyError, AttributeError):
+                pass
             config_dict: dict[str, Any] = {
                 # Base parameters
                 "algorithm": self.algorithm.name,
@@ -803,9 +860,16 @@ class TrainerEngine:
                 # Data
                 "train_items": len(train_split.items),
                 "val_items": _val_items,
+                "test_items": _test_items,
+                "eval_test": self.eval_test,
                 "steps_per_epoch": steps_per_epoch,
                 "total_steps": total_steps,
             }
+            # Merge with existing config.json to preserve dashboard fields
+            # (name, description, task_id, created_at, memory_algorithm, etc.)
+            _existing_cfg = _load_json(str(self.out_dir / "config.json")) or {}
+            _existing_cfg.update(config_dict)
+            config_dict = _existing_cfg
             _save_json(str(self.out_dir / "config.json"), config_dict)
             self._emit("config_saved", config_dict)
 
@@ -820,10 +884,17 @@ class TrainerEngine:
                     logger.warning("No val split; using first {} train items", self.batch_size)
 
                 try:
-                    baseline_score = await self.algorithm.evaluate(
-                        self.env, self.skill_init, val_items,
-                        str(self.out_dir / "baseline"),
-                    )
+                    # Suppress memory writes during baseline evaluation
+                    if hasattr(self.env, '_set_eval_readonly'):
+                        self.env._set_eval_readonly()
+                    try:
+                        baseline_score = await self.algorithm.evaluate(
+                            self.env, self.skill_init, val_items,
+                            str(self.out_dir / "baseline"),
+                        )
+                    finally:
+                        if hasattr(self.env, '_clear_eval_readonly'):
+                            self.env._clear_eval_readonly()
                     self._current_score = baseline_score
                     self._best_score = baseline_score
                     self._best_step = 0
@@ -861,6 +932,10 @@ class TrainerEngine:
                 logger.info("=== EPOCH {}/{} ===", epoch, self.num_epochs)
                 self._emit("epoch_start", {"epoch": epoch})
 
+                # Notify algorithm of epoch start (clears epoch-local buffers)
+                if hasattr(self.algorithm, "on_epoch_start"):
+                    self.algorithm.on_epoch_start(epoch)
+
                 # Generate batches for this epoch
                 batches = list(train_split.iter_batches(
                     self.batch_size, seed=self.seed + epoch * 1000,
@@ -886,6 +961,17 @@ class TrainerEngine:
                     # Track last step results for epoch-end comparison
                     curr_epoch_results = step_results
                     curr_epoch_items = step_items
+
+                # Skip epoch-end processing if cancel was requested
+                if self._cancel_requested:
+                    logger.info("Cancel requested — skipping epoch_end for epoch {}", epoch)
+                    self._emit("epoch_done", {
+                        "epoch": epoch,
+                        "current_score": self._current_score,
+                        "best_score": self._best_score,
+                        "cancelled": True,
+                    })
+                    break
 
                 # Epoch end hook with slow update / meta skill support
                 epoch_out_dir = str(self.out_dir / "epochs" / f"epoch_{epoch:02d}")
@@ -927,6 +1013,10 @@ class TrainerEngine:
                     "best_score": self._best_score,
                 })
 
+            # ── Test set evaluation (with & without skill) ────────────────
+            if self.eval_test and not self._cancel_requested:
+                await self._run_test_evaluation()
+
             # Training complete
             elapsed = time.time() - t_start
 
@@ -954,6 +1044,22 @@ class TrainerEngine:
             }
             _save_json(str(self.out_dir / "summary.json"), summary)
 
+            # Persist timing into runtime_state.json for dashboard display
+            runtime_state = _load_json(str(self.out_dir / "runtime_state.json")) or {}
+            runtime_state["started_at"] = train_started_at
+            runtime_state["finished_at"] = _dt_mod.datetime.now().isoformat()
+            runtime_state["total_wall_time_s"] = round(elapsed, 1)
+            runtime_state["status"] = "stopped" if self._cancel_requested else "completed"
+            _save_json(str(self.out_dir / "runtime_state.json"), runtime_state)
+
+            # Include test results in summary if available
+            test_summary_path = self.out_dir / "test_evaluation" / "test_summary.json"
+            if test_summary_path.exists():
+                test_data = _load_json(str(test_summary_path))
+                if test_data:
+                    summary["test_evaluation"] = test_data
+                    _save_json(str(self.out_dir / "summary.json"), summary)
+
             self._emit("training_done", {
                 "elapsed_s": round(elapsed, 1),
                 "best_score": self._best_score,
@@ -964,6 +1070,17 @@ class TrainerEngine:
         except Exception as exc:
             logger.error("Training error: {}", exc, exc_info=True)
             self._emit("error", {"error": str(exc), "detail": repr(exc)})
+            # Record timing even on failure
+            elapsed_on_error = time.time() - t_start
+            try:
+                rs = _load_json(str(self.out_dir / "runtime_state.json")) or {}
+                rs["started_at"] = train_started_at
+                rs["finished_at"] = _dt_mod.datetime.now().isoformat()
+                rs["total_wall_time_s"] = round(elapsed_on_error, 1)
+                rs["status"] = "failed"
+                _save_json(str(self.out_dir / "runtime_state.json"), rs)
+            except Exception:
+                pass
             raise
         finally:
             self._running = False
@@ -1059,6 +1176,21 @@ class TrainerEngine:
         step_rec.rollout_soft = round(rollout_soft, 6)
         step_rec.rollout_n = len(results)
 
+        # Early exit on cancel between phases
+        if self._cancel_requested:
+            step_rec.action = "cancelled"
+            step_rec.score = self._current_score
+            step_rec.timing = timing
+            step_rec.current_score = self._current_score
+            step_rec.best_score = self._best_score
+            step_rec.best_step = self._best_step
+            step_rec.wall_time_s = round(time.time() - step_t0, 1)
+            self._history.add_step(step_rec)
+            self._save_state(global_step)
+            _save_json(os.path.join(step_dir, "step_record.json"), step_rec.to_dict())
+            self._emit("step_done", {"step": global_step, "action": "cancelled"})
+            return results, items
+
         # ② REFLECT
         if "reflect" not in completed:
             t0 = time.time()
@@ -1125,6 +1257,21 @@ class TrainerEngine:
             })
             return results, items
 
+        # Early exit on cancel between phases
+        if self._cancel_requested:
+            step_rec.action = "cancelled"
+            step_rec.score = self._current_score
+            step_rec.timing = timing
+            step_rec.current_score = self._current_score
+            step_rec.best_score = self._best_score
+            step_rec.best_step = self._best_step
+            step_rec.wall_time_s = round(time.time() - step_t0, 1)
+            self._history.add_step(step_rec)
+            self._save_state(global_step)
+            _save_json(os.path.join(step_dir, "step_record.json"), step_rec.to_dict())
+            self._emit("step_done", {"step": global_step, "action": "cancelled"})
+            return results, items
+
         # ③ AGGREGATE
         if "aggregate" not in completed:
             t0 = time.time()
@@ -1155,6 +1302,21 @@ class TrainerEngine:
             })
 
         step_rec.n_edits_merged = len(merged_patch.edits)
+
+        # Early exit on cancel between phases
+        if self._cancel_requested:
+            step_rec.action = "cancelled"
+            step_rec.score = self._current_score
+            step_rec.timing = timing
+            step_rec.current_score = self._current_score
+            step_rec.best_score = self._best_score
+            step_rec.best_step = self._best_step
+            step_rec.wall_time_s = round(time.time() - step_t0, 1)
+            self._history.add_step(step_rec)
+            self._save_state(global_step)
+            _save_json(os.path.join(step_dir, "step_record.json"), step_rec.to_dict())
+            self._emit("step_done", {"step": global_step, "action": "cancelled"})
+            return results, items
 
         # ④ SELECT
         if "select" not in completed:
@@ -1209,6 +1371,21 @@ class TrainerEngine:
                 except OSError:
                     pass
 
+        # Early exit on cancel between phases
+        if self._cancel_requested:
+            step_rec.action = "cancelled"
+            step_rec.score = self._current_score
+            step_rec.timing = timing
+            step_rec.current_score = self._current_score
+            step_rec.best_score = self._best_score
+            step_rec.best_step = self._best_step
+            step_rec.wall_time_s = round(time.time() - step_t0, 1)
+            self._history.add_step(step_rec)
+            self._save_state(global_step)
+            _save_json(os.path.join(step_dir, "step_record.json"), step_rec.to_dict())
+            self._emit("step_done", {"step": global_step, "action": "cancelled"})
+            return results, items
+
         # ⑤ UPDATE
         if "update" not in completed:
             t0 = time.time()
@@ -1244,6 +1421,22 @@ class TrainerEngine:
             })
 
         step_rec.candidate_skill_len = len(candidate_skill)
+
+        # Early exit on cancel between phases (skip evaluate)
+        if self._cancel_requested:
+            step_rec.action = "cancelled"
+            step_rec.score = self._current_score
+            step_rec.timing = timing
+            step_rec.current_score = self._current_score
+            step_rec.best_score = self._best_score
+            step_rec.best_step = self._best_step
+            step_rec.wall_time_s = round(time.time() - step_t0, 1)
+            self._history.add_step(step_rec)
+            self._save_state(global_step)
+            _save_json(os.path.join(step_dir, "step_record.json"), step_rec.to_dict())
+            self._emit("step_done", {"step": global_step, "action": "cancelled"})
+            return results, items
+
         # Build edit_apply_summary (aligned with official)
         if apply_report:
             step_rec.edit_apply_summary = {
@@ -1265,12 +1458,34 @@ class TrainerEngine:
                 val_items = self.data_loader.train.items[:self.batch_size]
 
             sel_eval_dir = os.path.join(step_dir, "selection_eval")
-            cand_score = await self.algorithm.evaluate(
-                self.env, candidate_skill, val_items, sel_eval_dir,
-            )
+
+            # ── Skill hash cache check (aligned with official SkillOpt) ──
+            cand_hash = _skill_hash(candidate_skill)
+            if cand_hash in self._skill_cache:
+                cand_score = self._skill_cache[cand_hash]
+                eval_soft = cand_score  # best proxy when rollout is skipped
+                logger.info(
+                    "[6/6 EVALUATE] skill hash cache HIT ({}) — skipping rollout, score={:.4f}",
+                    cand_hash, cand_score,
+                )
+                self._emit("evaluate_cache_hit", {
+                    "step": global_step, "hash": cand_hash, "score": cand_score,
+                })
+            else:
+                cand_score = await self.algorithm.evaluate(
+                    self.env, candidate_skill, val_items, sel_eval_dir,
+                )
+                eval_soft = getattr(self.algorithm, '_last_evaluate_soft_score', cand_score)
+                self._skill_cache[cand_hash] = cand_score
+                logger.info(
+                    "[6/6 EVALUATE] cache miss ({}) — score={:.4f} stored (cache_size={})",
+                    cand_hash, cand_score, len(self._skill_cache),
+                )
+
             timing["evaluate_s"] = round(time.time() - t0, 1)
 
             # Gate decision
+            score_before_gate = self._current_score
             gate = evaluate_gate(
                 candidate_skill=candidate_skill,
                 cand_hard=cand_score,
@@ -1295,14 +1510,27 @@ class TrainerEngine:
             if gate.action == "accept_new_best":
                 self._best_origin = self._current_origin
 
+            # Compute failure patterns early (used by record_rejection + digest)
+            failure_patterns = _extract_failure_patterns(results)
+
+            # Record rejected edits + failure patterns for negative feedback
+            if gate.action == "reject":
+                self.algorithm.record_rejection(
+                    step=global_step,
+                    patch=selected_patch,
+                    score_before=score_before_gate,
+                    score_after=cand_score,
+                    failure_patterns=failure_patterns,
+                )
+
             step_rec.score = cand_score
             step_rec.action = gate.action
-            step_rec.skill_hash = _skill_hash(candidate_skill)
+            step_rec.skill_hash = cand_hash
             step_rec.n_edits_rejected = (
                 len(selected_patch.edits) if gate.action == "reject" else 0
             )
             step_rec.selection_hard = cand_score
-            step_rec.selection_soft = cand_score
+            step_rec.selection_soft = eval_soft
 
             # Save gate decision artifact
             self._save_step_artifact(step_dir, "gate_decision.json", {
@@ -1336,7 +1564,6 @@ class TrainerEngine:
             _save_json(os.path.join(step_dir, "step_record.json"), step_rec.to_dict())
 
             # Write trajectory_digest.json
-            failure_patterns = _extract_failure_patterns(results)
             digest: dict[str, Any] = {
                 "step": global_step,
                 "action": gate.action,
@@ -1352,6 +1579,30 @@ class TrainerEngine:
                 digest["score_before"] = self._current_score
                 digest["score_after"] = cand_score
             _save_json(os.path.join(step_dir, "trajectory_digest.json"), digest)
+
+            # ── Update step buffer (aligned with official SkillOpt) ──
+            if hasattr(self.algorithm, "update_step_buffer"):
+                # Aggregate failure summaries from all raw patches
+                all_failure_summaries = []
+                for p in raw_patches:
+                    if getattr(p, "failure_summary", None):
+                        all_failure_summaries.extend(p.failure_summary)
+
+                n_analysis_failures = getattr(
+                    self.algorithm, "_last_analysis_failures", 0
+                )
+                self.algorithm.update_step_buffer(
+                    global_step,
+                    rollout_hard=rollout_hard,
+                    rollout_soft=rollout_soft,
+                    n_patches=len(raw_patches),
+                    n_analysis_failures=n_analysis_failures,
+                    gate_action=gate.action,
+                    selected_edits=selected_patch.edits,
+                    failure_summaries=all_failure_summaries or None,
+                    score_before=score_before_gate,
+                    score_after=cand_score,
+                )
 
             # Save state (includes algorithm_state.json)
             self._history.add_step(step_rec)
@@ -1415,33 +1666,190 @@ class TrainerEngine:
 
         return results, items
 
+    # ── Test evaluation (post-training) ──────────────────────────────
+
+    async def _run_test_evaluation(self) -> dict:
+        """Run val + test evaluation with and without skill after training.
+
+        Produces:
+          - test_evaluation/val_with_skill/   — val results using best skill
+          - test_evaluation/val_no_skill/     — val baseline results (no skill)
+          - test_evaluation/test_with_skill/  — test results using best skill
+          - test_evaluation/test_no_skill/    — test baseline results (no skill)
+          - test_evaluation/test_summary.json — combined comparison summary
+
+        Memory writes are suppressed during evaluation (read-only mode) so
+        the training memory store is not polluted with eval artifacts.
+        """
+        eval_dir = self.out_dir / "test_evaluation"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+
+        # Suppress memory writes during evaluation
+        if hasattr(self.env, '_set_eval_readonly'):
+            self.env._set_eval_readonly()
+
+        summary: dict[str, Any] = {"best_skill_chars": len(self._best_skill)}
+
+        try:
+            async def _eval_split(
+                split_name: str, items: list,
+                *, known_with_skill_score: float | None = None,
+            ) -> dict[str, float]:
+                """Evaluate one split with & without skill.
+
+                When *known_with_skill_score* is provided the with-skill
+                rollout is skipped and the given score is reused directly
+                (e.g. val best score already known from training).
+                """
+                split_dir = eval_dir / split_name
+                split_dir.mkdir(parents=True, exist_ok=True)
+
+                logger.info("[EVAL] evaluating {} items on split '{}'", len(items), split_name)
+                self._emit("eval_split_start", {"split": split_name, "n_items": len(items)})
+
+                # With best skill
+                if known_with_skill_score is not None:
+                    s_with = known_with_skill_score
+                    logger.info(
+                        "[EVAL] {} with_skill={:.4f} (reused from training, skipping rollout)",
+                        split_name, s_with,
+                    )
+                    self._emit("eval_phase", {"split": split_name, "phase": "with_skill_reused"})
+                else:
+                    self._emit("eval_phase", {"split": split_name, "phase": "with_skill"})
+                    try:
+                        s_with = await self.algorithm.evaluate(
+                            self.env, self._best_skill, items,
+                            str(split_dir / f"{split_name}_with_skill"),
+                        )
+                    except Exception as exc:
+                        logger.error("[EVAL] {} with-skill failed: {}", split_name, exc, exc_info=True)
+                        s_with = -1.0
+
+                # Without skill (baseline)
+                self._emit("eval_phase", {"split": split_name, "phase": "no_skill"})
+                try:
+                    s_no = await self.algorithm.evaluate(
+                        self.env, "", items,
+                        str(split_dir / f"{split_name}_no_skill"),
+                    )
+                except Exception as exc:
+                    logger.error("[EVAL] {} no-skill failed: {}", split_name, exc, exc_info=True)
+                    s_no = -1.0
+
+                delta = s_with - s_no
+                result = {
+                    "n_items": len(items),
+                    "score_with_skill": round(s_with, 6),
+                    "score_no_skill": round(s_no, 6),
+                    "delta": round(delta, 6),
+                    "improvement_pct": round(delta * 100, 2) if s_no >= 0 else None,
+                }
+                logger.info(
+                    "[EVAL] {} with_skill={:.4f}  no_skill={:.4f}  delta={:+.4f}",
+                    split_name, s_with, s_no, delta,
+                )
+                self._emit("eval_split_done", {"split": split_name, **result})
+                return result
+
+            # ── Val split ────────────────────────────────────────────────
+            # Val with-skill score is already known from training (_best_score),
+            # so skip the redundant rollout and only evaluate val baseline.
+            try:
+                val_items = self.data_loader.val.items
+            except (KeyError, AttributeError):
+                val_items = []
+            if val_items:
+                _val_known = self._best_score if self._best_score >= 0 else None
+                summary["val"] = await _eval_split(
+                    "val", val_items,
+                    known_with_skill_score=_val_known,
+                )
+            else:
+                logger.info("[EVAL] no val split available; skipping")
+                summary["val"] = None
+
+            # ── Test split ───────────────────────────────────────────────
+            try:
+                test_items = self.data_loader.test.items
+            except (KeyError, AttributeError):
+                test_items = []
+            if test_items:
+                summary["test"] = await _eval_split("test", test_items)
+            else:
+                logger.info("[EVAL] no test split available; skipping")
+                summary["test"] = None
+
+            # ── Persist summary ──────────────────────────────────────────
+            _save_json(str(eval_dir / "test_summary.json"), summary)
+            self._emit("eval_done", summary)
+            return summary
+        finally:
+            # Restore original memory store after evaluation
+            if hasattr(self.env, '_clear_eval_readonly'):
+                self.env._clear_eval_readonly()
+
     # ── Eval only ─────────────────────────────────────────────────────
 
-    async def eval_only(self, skill_content: str | None = None) -> float:
+    async def eval_only(
+        self,
+        skill_content: str | None = None,
+        *,
+        split: str = "val",
+        with_skill: bool = True,
+    ) -> float:
         """Run evaluation only (no training).
 
         Parameters
         ----------
         skill_content : str | None
-            Skill to evaluate. Uses current skill if None.
+            Skill to evaluate. Uses current/best skill if None.
+        split : str
+            Data split to evaluate on (``"val"`` or ``"test"``).
+        with_skill : bool
+            If False, evaluate without skill (baseline).
 
         Returns
         -------
         float
-            Validation score.
+            Score on the requested split.
         """
         self._ensure_out_dir()
-        skill = skill_content or self._current_skill
-        try:
-            val_items = self.data_loader.val.items
-        except KeyError:
-            val_items = self.data_loader.train.items[:self.batch_size]
+        if not with_skill:
+            skill = ""
+        elif skill_content is not None:
+            skill = skill_content
+        else:
+            skill = self._current_skill
 
-        eval_dir = str(self.out_dir / "eval_only")
-        score = await self.algorithm.evaluate(
-            self.env, skill, val_items, eval_dir,
-        )
-        self._emit("eval_done", {"score": score})
+        try:
+            items = self.data_loader.get_split(split).items
+        except KeyError:
+            fallback = "train" if split == "val" else "val"
+            logger.warning(
+                "Split '{}' not found; falling back to '{}'", split, fallback,
+            )
+            try:
+                items = self.data_loader.get_split(fallback).items
+            except KeyError:
+                items = self.data_loader.train.items[:self.batch_size]
+
+        # Suppress memory writes during evaluation
+        if hasattr(self.env, '_set_eval_readonly'):
+            self.env._set_eval_readonly()
+
+        eval_dir = str(self.out_dir / f"eval_only_{split}")
+        try:
+            score = await self.algorithm.evaluate(
+                self.env, skill, items, eval_dir,
+            )
+        finally:
+            if hasattr(self.env, '_clear_eval_readonly'):
+                self.env._clear_eval_readonly()
+
+        self._emit("eval_done", {
+            "score": score, "split": split, "with_skill": with_skill,
+        })
         return score
 
     # ── Deploy skill ──────────────────────────────────────────────────

@@ -107,7 +107,9 @@ reme = [
     "reme-ai>=0.3.1.9",
 ]
 dashboard = [
-    "gradio>=5.0.0,<7.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",
@@ -134,6 +136,7 @@ include = [
     "summerclaw/templates/**/*.md",
     "summerclaw/skills/**/*.md",
     "summerclaw/skills/**/*.sh",
+    "summerclaw/agent_trainer/dashboard/frontend/dist/**",
 ]
 
 [tool.hatch.build.targets.wheel]

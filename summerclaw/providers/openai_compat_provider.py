@@ -369,7 +369,16 @@ class OpenAICompatProvider(LLMProvider):
                     break
 
         if reasoning_effort:
-            kwargs["reasoning_effort"] = reasoning_effort
+            # Only add reasoning_effort for OpenAI, Anthropic, Azure, and gateways.
+            # DashScope, VolcEngine, and other providers use extra_body for thinking.
+            supports_reasoning_effort = (
+                spec is None  # Custom/unknown provider
+                or spec.is_gateway  # Gateways support any OpenAI param
+                or spec.name in ("openai", "anthropic", "azure_openai")
+                or spec.backend == "anthropic"
+            )
+            if supports_reasoning_effort:
+                kwargs["reasoning_effort"] = reasoning_effort
 
         # Provider-specific thinking parameters.
         # Only sent when reasoning_effort is explicitly configured so that

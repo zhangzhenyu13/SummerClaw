@@ -136,6 +136,9 @@ class WeixinChannel(BaseChannel):
 
     name = "weixin"
     display_name = "WeChat"
+    # WeChat requires an active session (context_token) to send messages;
+    # proactive/system notifications cannot be delivered without user interaction.
+    supports_proactive_send = False
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:

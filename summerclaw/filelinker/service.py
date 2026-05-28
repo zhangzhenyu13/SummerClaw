@@ -56,20 +56,30 @@ class FileLinkerService:
     def port(self) -> int:
         return getattr(self.config, "port", 8090)
 
+    def exceeds_threshold(self, channel: str, file_path: str) -> bool:
+        """Return ``True`` if *file_path* exceeds the channel's size threshold.
+
+        Unlike ``should_use_link``, this checks size only — it does NOT require
+        Tailscale to be available.  Used by the middleware to decide whether to
+        fall back to a warning message when Tailscale is down.
+        """
+        if not getattr(self.config, "enabled", False):
+            return False
+        try:
+            size = os.path.getsize(file_path)
+        except OSError:
+            return False
+        thresholds: dict[str, int] = getattr(self.config, "channel_thresholds", {})
+        threshold = thresholds.get(channel, thresholds.get("default", 800_000))
+        return size >= threshold
+
     def should_use_link(self, channel: str, file_path: str) -> bool:
         """Return ``True`` if *file_path* exceeds the channel's size threshold."""
         if not getattr(self.config, "enabled", False):
             return False
         if not self._tailscale_ip:
             return False
-        try:
-            size = os.path.getsize(file_path)
-        except OSError:
-            return False
-
-        thresholds: dict[str, int] = getattr(self.config, "channel_thresholds", {})
-        threshold = thresholds.get(channel, thresholds.get("default", 800_000))
-        return size >= threshold
+        return self.exceeds_threshold(channel, file_path)
 
     def get_file_size(self, file_path: str) -> int:
         try:

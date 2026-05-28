@@ -51,15 +51,19 @@ train:
   num_epochs: 4
   train_size: 0          # 0 = derive from dataset split when available
   batch_size: 40
+  workers: 0             # 0 = auto-derive 80% of maxConcurrency; set >0 to override
   accumulation: 1
   seed: 42
 
 gradient:
   minibatch_size: 8
   merge_batch_size: 8
-  analyst_workers: 16
   max_analyst_rounds: 3
   failure_only: false
+  # Per-stage workers overrides (default to train.workers if not set)
+  # analyst_workers: 0
+  # aggregate_workers: 0
+  # evaluate_workers: 0
 
 optimizer:
   learning_rate: 4          # max edits per step (edit_budget)
@@ -71,6 +75,9 @@ optimizer:
   slow_update_samples: 20
   longitudinal_pair_policy: mixed  # mixed / changed / unchanged
   use_meta_skill: true
+  use_rejected_buffer: true            # track rejected edits for negative feedback
+  rejected_buffer_max_size: 10         # max entries in the rejected buffer
+  rejected_buffer_max_summary_chars: 200  # max chars per edit summary
 
 evaluation:
   use_gate: true
@@ -89,3 +96,5 @@ env:
   split_output_dir: ""
   exec_timeout: 120      # per target model call timeout in seconds
   out_root: ""
+  memory_algorithm: null            # null (disable) | naive_memory | nemori_memory | layerga_memory | mem0v3_memory | supermemory_memory | hindsight_memory | mastra_om_memory
+  enabled_tools: []               # empty = all default tools; list tool names to enable selectively

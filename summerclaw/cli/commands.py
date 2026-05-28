@@ -995,6 +995,17 @@ def gateway(
         _startup_lines.append(f"  FileLinker: enabled ({_fl_ip}:{_filelinker_service.port})")
     else:
         _startup_lines.append("  FileLinker: disabled")
+    # Tailscale status summary for all dependent services
+    _ts_available = bool(_filelinker_service and _filelinker_service.tailscale_ip)
+    _ts_deps: list[str] = []
+    _ts_deps.append(
+        f"    FileLinker P2P: {'✓ ready' if _ts_available else '✗ unavailable'}"
+    )
+    _ts_deps.append(
+        f"    Dashboard Funnel: pending…"
+    )
+    _startup_lines.append(f"  Tailscale: {'✓ detected' if _ts_available else '✗ not detected'}")
+    _startup_lines.extend(_ts_deps)
     if channels.enabled_channels:
         _startup_lines.append(f"  Channels: {', '.join(channels.enabled_channels)}")
     if _all_jobs:
@@ -1033,8 +1044,23 @@ def gateway(
                     _startup_lines.append(f"  Dashboard local: {_dash_info['local_url']}")
                 if _dash_info.get("share_url"):
                     _startup_lines.append(f"  Dashboard public: {_dash_info['share_url']}")
+                    # Update Tailscale Funnel status to ready
+                    for _i, _line in enumerate(_startup_lines):
+                        if _line.startswith("    Dashboard Funnel:"):
+                            _startup_lines[_i] = "    Dashboard Funnel: ✓ ready"
+                            break
+                else:
+                    # Funnel not available — update status
+                    for _i, _line in enumerate(_startup_lines):
+                        if _line.startswith("    Dashboard Funnel:"):
+                            _startup_lines[_i] = "    Dashboard Funnel: ✗ unavailable"
+                            break
             else:
                 _startup_lines.append(f"  Dashboard: {dashboard_url}")
+                for _i, _line in enumerate(_startup_lines):
+                    if _line.startswith("    Dashboard Funnel:"):
+                        _startup_lines[_i] = "    Dashboard Funnel: ✗ unavailable"
+                        break
             _startup_summary = "\n".join(_startup_lines)
         else:
             console.print("[yellow]\u26a0[/yellow] Dashboard failed to start (see logs)")
@@ -1073,25 +1099,77 @@ def gateway(
                         "[yellow]\u26a0[/yellow] FileLinker: Tailscale IP not detected \u2014 "
                         "HTTP server not started"
                     )
-                    # Push channel notification warning that large-file P2P transfer is unavailable
-                    _fl_warn = (
-                        "\u26a0\ufe0f **FileLinker \u672a\u5c31\u7eea**\u2014\u2014Tailscale \u670d\u52a1\u672a\u68c0\u6d4b\u5230\uff0c"
-                        "P2P \u5927\u6587\u4ef6\u76f4\u4f20\u4e0d\u53ef\u7528\u3002\n"
-                        "\u8bf7\u5b89\u88c5\u5e76\u542f\u52a8 Tailscale\uff1ahttps://login.tailscale.com/download\uff0c"
-                        "\u7136\u540e\u91cd\u542f gateway\u3002"
-                    )
-                    try:
-                        await channels.notify_startup(_fl_warn)
-                    except Exception:
-                        logger.warning("Failed to push FileLinker unavailable notification to channels")
 
             # Schedule startup notification to channels (best-effort, non-blocking)
+            # Tailscale dependency warning is included so channels have time to connect first
+            # Build Tailscale dependency warning for channel notification
+            _ts_warn_parts: list[str] = []
+            if _filelinker_service and not _filelinker_service.tailscale_ip:
+                _ts_warn_parts.append("  - FileLinker P2P 大文件直传不可用")
+            _dash_info_check = None
+            try:
+                from summerclaw.agent_trainer.command import _get_gateway_dashboard_info as _gi
+                _dash_info_check = _gi()
+            except Exception:
+                pass
+            if _dash_info_check and not _dash_info_check.get("share_url"):
+                _ts_warn_parts.append("  - Dashboard 公网访问（Funnel）不可用")
+            _fl_warn = ""
+            if _ts_warn_parts:
+                _fl_warn = (
+                    "\n\n⚠️ **Tailscale 服务未检测到**，以下依赖功能受限：\n"
+                    + "\n".join(_ts_warn_parts)
+                    + "\n请安装并启动 Tailscale：https://login.tailscale.com/download，"
+                    "然后重启 gateway。"
+                )
+
             async def _notify_startup():
-                await asyncio.sleep(3)  # Brief delay for channels to establish connections
+                await asyncio.sleep(5)  # Delay for channels to establish connections
+                # Log via the notify_startup hook (best-effort, channels may override)
                 try:
-                    await channels.notify_startup(_startup_summary)
+                    await channels.notify_startup(_startup_summary + _fl_warn)
                 except Exception:
                     logger.exception("Failed to push startup notification to channels")
+
+                # Actually deliver Tailscale dependency warning to users via outbound bus
+                if _fl_warn:
+                    from summerclaw.bus.events import OutboundMessage
+                    enabled = set(channels.enabled_channels)
+                    seen: set[tuple[str, str]] = set()
+                    for item in session_manager.list_sessions():
+                        key = item.get("key") or ""
+                        if ":" not in key:
+                            continue
+                        ch_name, chat_id = key.split(":", 1)
+                        if ch_name in {"cli", "system"} or ch_name not in enabled:
+                            continue
+                        pair = (ch_name, chat_id)
+                        if pair in seen:
+                            continue
+                        seen.add(pair)
+                        # Check if this channel supports proactive send
+                        channel_obj = channels.channels.get(ch_name)
+                        if channel_obj and not getattr(channel_obj, "supports_proactive_send", True):
+                            logger.info(
+                                "Tailscale warning skipped for {}:{} — channel does not support proactive send",
+                                ch_name, chat_id,
+                            )
+                            continue
+                        try:
+                            await bus.publish_outbound(OutboundMessage(
+                                channel=ch_name,
+                                chat_id=chat_id,
+                                content=_fl_warn.strip(),
+                            ))
+                            logger.info(
+                                "Tailscale warning delivered to {}:{}",
+                                ch_name, chat_id,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to push Tailscale warning to {}:{}",
+                                ch_name, chat_id,
+                            )
 
             asyncio.create_task(_notify_startup())
 
