@@ -65,6 +65,7 @@ Desktop.ini
 # Editors & IDEs (local workspace / user settings)
 .vscode/
 .cursor/
+.qoder/
 .idea/
 .fleet/
 *.code-workspace
