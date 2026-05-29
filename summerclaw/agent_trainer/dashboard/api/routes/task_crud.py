@@ -518,6 +518,9 @@ def register(router: APIRouter, state: _DashboardState) -> None:
         results = {}
         if eval_dir.is_dir():
             for f in sorted(eval_dir.glob("*.json")):
+                # Skip per-item data files (e.g. val_with_skill_items.json)
+                if f.stem.endswith("_items"):
+                    continue
                 key = f.stem  # e.g. "val_with_skill"
                 data = _load_json(str(f))
                 if data:
