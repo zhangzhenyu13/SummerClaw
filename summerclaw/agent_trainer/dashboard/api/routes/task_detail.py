@@ -17,11 +17,25 @@ def register(router: APIRouter, state: _DashboardState) -> None:
 
     @router.get("/api/tasks/{task_id}/history")
     async def get_task_history(task_id: str):
+        # Check for a scheduler-managed per-task engine first
+        if state.scheduler is not None:
+            _te = state.scheduler.get_task_engine(task_id)
+            if _te is not None:
+                _hist = _te.history
+                history = [
+                    {
+                        "step": s.step, "epoch": s.epoch, "score": round(s.score, 4),
+                        "action": s.action, "skill_hash": s.skill_hash,
+                        "edits_applied": s.n_edits_applied, "edits_rejected": s.n_edits_rejected,
+                    }
+                    for s in _hist.steps
+                ]
+                chart = [{"step": s.step, "score": s.score} for s in _hist.steps]
+                return {"history": history, "chart": chart}
+
         active_dir = str(state.engine.out_dir)
         selected_dir = str(state.train_root / task_id)
         # Only return active engine's history when the queried task IS the active task.
-        # The old `or state.engine.has_data()` condition leaked the active task's
-        # history to any other task that happened to be queried while data was loaded.
         if selected_dir == active_dir:
             return {"history": state.get_history_rows(), "chart": state.get_score_chart()}
         return {
@@ -31,6 +45,13 @@ def register(router: APIRouter, state: _DashboardState) -> None:
 
     @router.get("/api/tasks/{task_id}/skill")
     async def get_task_skill(task_id: str, which: str = "best"):
+        # Check for a scheduler-managed per-task engine first
+        if state.scheduler is not None:
+            _te = state.scheduler.get_task_engine(task_id)
+            if _te is not None:
+                content = _te.best_skill if which == "best" else _te.current_skill
+                return {"content": content, "chars": len(content)}
+
         active_dir = str(state.engine.out_dir)
         selected_dir = str(state.train_root / task_id)
         if selected_dir == active_dir:

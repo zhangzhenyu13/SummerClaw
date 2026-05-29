@@ -1,0 +1,248 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SummerClaw MOSCOPT 训练配置文件
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# MOSCOPT — Mixed Optimization of Skill Collectives with Optimizer Pool Tiling
+# 混合技能集体优化算法，核心策略：门控选择性披露 + 集体进化
+#
+# 📖 使用说明:
+#   - Dashboard 启动训练时会自动加载此文件
+#   - 带有 ✅ 标记的参数可以安全修改
+#   - 带有 🔒 标记的参数由系统自动管理，请勿修改
+#   - 修改后保存文件，下次启动训练时生效
+#
+# 📚 算法规格: docs/MOSCOP.md
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ─── 训练参数 ─────────────────────────────────────────────────────────────
+# 控制训练循环的核心参数
+
+train:
+  # ✅ 训练轮数 — 完整遍历训练集的次数
+  #    推荐值: 3-10，集体进化需要足够轮数才能生效
+  num_epochs: 4
+
+  # ✅ 批处理大小 — 每次训练迭代处理的样本数
+  #    推荐值: 20-50，取决于显存和数据量
+  batch_size: 40
+
+  # ✅ 并发工作数 — 控制 Rollout / Evaluate 阶段的并行执行数
+  #    同时作为 Reflect(analyst_workers) / Aggregate(aggregate_workers)
+  #    / Evaluate(evaluate_workers) 阶段的默认值
+  #    设为 0 时自动推导为系统 maxConcurrency 的 80%
+  #    如需单独调整某阶段，可在 gradient 分区设置覆盖值
+  workers: 0
+
+  # ✅ 梯度累积步数 — 每 N 个 batch 后执行一次参数更新
+  #    用于模拟大 batch 训练，设为 1 表示不累积
+  accumulation: 1
+
+  # ✅ 随机种子 — 保证训练可复现
+  seed: 42
+
+
+# ─── 优化器参数 ───────────────────────────────────────────────────────────
+# 控制 MOSCOPT 混合技能集体优化器的行为
+
+optimizer:
+  # ✅ 学习率 (最大编辑数) — 每步最多应用的编辑操作数
+  #    推荐值: 2-6，过高可能导致技能退化
+  learning_rate: 4
+
+  # ✅ 最小学习率 — 衰减调度器的下限
+  min_learning_rate: 2
+
+  # ✅ 学习率调度策略:
+  #    - constant: 固定学习率（推荐新手使用）
+  #    - linear: 线性衰减
+  #    - cosine: 余弦退火（推荐，通常效果最好）
+  #    - autonomous: LLM 自主决定学习率
+  lr_scheduler: cosine
+
+  # ✅ 技能更新模式:
+  #    - patch: 增量编辑（推荐，稳定可靠）
+  #    - rewrite_from_suggestions: 基于建议重写
+  #    - full_rewrite_minibatch: 全量重写（实验性）
+  skill_update_mode: patch
+
+  # ✅ 是否启用慢更新 — 跨 epoch 的长期技能指导
+  use_slow_update: true
+
+  # ✅ 慢更新样本数 — 用于比较的历史样本数
+  slow_update_samples: 20
+
+  # ✅ 是否启用元技能 — 跨 epoch 的优化器记忆
+  use_meta_skill: true
+
+  # ✅ 纵向对比策略:
+  #    - mixed: 所有样本（推荐）
+  #    - changed: 仅关注变化的样本
+  #    - unchanged: 仅关注稳定的样本
+  longitudinal_pair_policy: mixed
+
+  # ✅ 是否启用 Rejected Buffer — 记录被拒绝的编辑以避免重复
+  use_rejected_buffer: true
+
+  # ✅ Rejected Buffer 最大容量
+  rejected_buffer_max_size: 10
+
+  # ✅ Rejected Buffer 摘要最大字符数
+  rejected_buffer_max_summary_chars: 200
+
+  # ─── MOSCOPT 专属参数 ───────────────────────────────────────────────
+  # 控制技能池、门控选择、集体进化的行为
+
+  # ✅ 技能池大小 (N) — 池中维护的候选技能数量
+  #    推荐值: 3-10，越大探索空间越广但开销增加
+  pool_size: 5
+
+  # ✅ 激活数 (K) — 每个任务从池中选取的活跃技能数
+  #    推荐值: 1-3，必须满足 K < N
+  activate_count: 2
+
+  # ✅ 进化间隔 (E) — 每隔多少个 batch 触发一次集体进化
+  #    推荐值: 3-10，太频繁会导致不稳定
+  evolution_interval: 5
+
+  # ✅ 进化繁殖数 (M) — 每次集体进化时繁殖的新候选数
+  #    推荐值: 1-3
+  evolution_count: 1
+
+  # ✅ 门控粒度 — 技能选择的粒度级别
+  #    - task: 按任务选择（推荐，开销小）
+  #    - step: 按步骤选择（更细粒度，开销更大）
+  gating_granularity: task
+
+  # ✅ EMA 平滑系数 (β) — Q-score 指数移动平均的平滑度
+  #    推荐值: 0.1-0.5，越小越平滑（更稳定但响应更慢）
+  ema_beta: 0.3
+
+  # ✅ 最小激活次数 — 候选技能参与门控比较前的最少激活数
+  #    低于此阈值时使用 fallback_top_k 而非公平锦标赛
+  min_activations: 5
+
+  # ✅ 多样性阈值 — 繁殖时父本间的最小语义差异
+  #    推荐值: 0.7-0.9，越高越强调多样性
+  diversity_threshold: 0.85
+
+  # ✅ 验证采样比例 — 门控验证时从验证集中采样的比例
+  #    推荐值: 0.3-1.0，1.0 表示使用全部验证集
+  val_sample_ratio: 1.0
+
+
+# ─── 梯度分析参数 ─────────────────────────────────────────────────────────
+# 控制 Reflect 阶段的轨迹分析
+
+gradient:
+  # ✅ 最小批大小 — 每次分析处理的轨迹数
+  #    推荐值: 4-12，影响分析质量和速度
+  minibatch_size: 8
+
+  # ✅ 合并批大小 — 层次合并的批大小
+  merge_batch_size: 8
+
+  # ✅ 分析轮数 — 最大分析迭代次数
+  max_analyst_rounds: 3
+
+  # ✅ 仅分析失败 — 只分析失败的轨迹（加速但可能遗漏信息）
+  failure_only: false
+
+  # ─── Per-Stage 并发覆盖（可选）─────────────────────────────────────────
+  # 以下参数默认继承 train.workers，仅在需要单独调整时取消注释
+  #
+  # ✅ Reflect 阶段并发数 — LLM 分析轨迹的并行度
+  # analyst_workers: 16
+  #
+  # ✅ Aggregate 阶段并发数 — LLM 层级合并的并行度
+  # aggregate_workers: 16
+  #
+  # ✅ Evaluate 阶段并发数 — 评估 rollout 的并行度
+  # evaluate_workers: 16
+
+
+# ─── 推理参数 ─────────────────────────────────────────────────────────────
+# 控制 LLM 调用的推理行为
+
+model:
+  # ✅ 推理努力程度 — 影响响应质量和延迟
+  #    - low: 快速响应，简单任务
+  #    - medium: 平衡（推荐）
+  #    - high: 深度思考，复杂任务
+  reasoning_effort: medium
+
+  # ✅ 重写推理努力 — 单独控制 rewrite 阶段的努力程度
+  #    留空 "" 表示使用 reasoning_effort 的值
+  rewrite_reasoning_effort: ""
+
+  # ✅ 重写最大 token 数 — rewrite 阶段的输出限制
+  rewrite_max_completion_tokens: 64000
+
+
+# ─── 评估参数 ─────────────────────────────────────────────────────────────
+# 控制技能验证和门控
+
+evaluation:
+  # 🔒 门控验证 — 必须启用，用于验证候选技能是否优于当前技能
+  use_gate: true
+
+  # ✅ 选择环境数 — 用于门控验证的环境数量（0=全部）
+  sel_env_num: 0
+
+  # ✅ 测试环境数 — 用于最终测试的环境数量（0=全部）
+  test_env_num: 0
+
+  # ✅ 评估测试集 — 是否在测试集上评估
+  eval_test: true
+
+
+# ─── 环境参数 ─────────────────────────────────────────────────────────────
+# 这些参数由 Dashboard 自动设置，通常不需要修改
+
+env:
+  # 🔒 环境名称 — 由系统自动设置
+  name: ""
+
+  # 🔒 初始技能路径 — 由 Dashboard 设置或自动检测
+  skill_init: ""
+
+  # ✅ 数据切分模式:
+  #    - ratio: 按比例从 data_path 切分
+  #    - split_dir: 使用预切分目录
+  split_mode: ratio
+
+  # ✅ 切分比例 — train:val:test（仅 split_mode=ratio 时生效）
+  split_ratio: "2:1:7"
+
+  # ✅ 切分随机种子
+  split_seed: 42
+
+  # 🔒 切分目录 — 由 Dashboard 数据上传自动设置
+  split_dir: ""
+
+  # 🔒 数据路径 — 由 Dashboard 数据上传自动设置
+  data_path: ""
+
+  # ✅ 执行超时 — 单次目标模型调用的超时时间（秒）
+  exec_timeout: 120
+
+  # ✅ 记忆算法 — 训练时使用的记忆模块，null 表示禁用
+  memory_algorithm: null
+
+  # ✅ 启用工具列表 — Rollout 阶段可用的工具，空列表表示全部
+  enabled_tools: []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 🔧 高级配置（通常不需要修改）
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 以下参数已由系统自动配置，保持默认即可
+# 如需修改，请参考算法规格文档 docs/MOSCOP.md
+
+# model:
+#   backend: openai_chat
+#   optimizer: ""              # 优化器模型（默认使用系统配置）
+#   target: ""                 # 目标模型（默认使用系统配置）
+#   azure_openai_endpoint: ""  # Azure OpenAI 端点（如使用）
+#   azure_openai_api_key: ""   # Azure OpenAI API 密钥（如使用）

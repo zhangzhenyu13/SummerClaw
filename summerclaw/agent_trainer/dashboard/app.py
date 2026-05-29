@@ -156,6 +156,7 @@ class DashboardServer:
         share: bool = True,
         train_root: Path | None = None,
         active_sessions: dict | None = None,
+        engine_factory=None,
     ):
         self.engine = engine
         self.host = host
@@ -163,6 +164,7 @@ class DashboardServer:
         self.share = share
         self.train_root = train_root or _default_train_root()
         self.active_sessions = active_sessions or {}
+        self._engine_factory = engine_factory
         self._thread: threading.Thread | None = None
         self._local_url: str | None = None
         self._share_url: str | None = None
@@ -225,6 +227,7 @@ class DashboardServer:
             self.engine,
             train_root=self.train_root,
             active_sessions=self.active_sessions,
+            engine_factory=self._engine_factory,
         )
 
         # -- Lifespan: start scheduler inside the async event loop --------
@@ -232,6 +235,13 @@ class DashboardServer:
 
         @asynccontextmanager
         async def _lifespan(app):
+            # Re-suppress access logger inside the event loop
+            import logging as _logging
+            _al = _logging.getLogger("uvicorn.access")
+            _al.handlers.clear()
+            _al.propagate = False
+            _al.setLevel(_logging.WARNING)
+
             self._local_url = local_url
             self._ready = True
             server_ready.set()
@@ -287,7 +297,7 @@ class DashboardServer:
                 }
 
         # -- Launch uvicorn -----------------------------------------------
-        # Custom log config: only WARNING+ for all uvicorn loggers
+        # Custom log config: silence access logs, only WARNING+ for errors
         _uvicorn_log_config = {
             "version": 1,
             "disable_existing_loggers": False,
@@ -297,10 +307,6 @@ class DashboardServer:
                     "fmt": "%(levelprefix)s %(message)s",
                     "use_colors": None,
                 },
-                "access": {
-                    "()": "uvicorn.logging.AccessFormatter",
-                    "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)d',
-                },
             },
             "handlers": {
                 "default": {
@@ -308,16 +314,14 @@ class DashboardServer:
                     "class": "logging.StreamHandler",
                     "stream": "ext://sys.stderr",
                 },
-                "access": {
-                    "formatter": "access",
-                    "class": "logging.StreamHandler",
-                    "stream": "ext://sys.stdout",
+                "null": {
+                    "class": "logging.NullHandler",
                 },
             },
             "loggers": {
                 "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
                 "uvicorn.error": {"handlers": ["default"], "level": "WARNING", "propagate": False},
-                "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
+                "uvicorn.access": {"handlers": ["null"], "level": "WARNING", "propagate": False},
             },
         }
 
@@ -327,8 +331,20 @@ class DashboardServer:
             port=self.port,
             log_config=_uvicorn_log_config,
             access_log=False,
+            log_level="warning",
         )
         server = uvicorn.Server(config)
+
+        # Nuclear suppression: force-reconfigure uvicorn access logger.
+        # dictConfig + access_log=False should suffice, but this guards
+        # against any runtime reconfiguration by third-party libs.
+        import logging as _logging
+        _access_log = _logging.getLogger("uvicorn.access")
+        _access_log.handlers.clear()
+        _access_log.propagate = False
+        _access_log.setLevel(_logging.WARNING)
+        _access_log.addFilter(lambda record: False)  # drop ALL records
+
         self._app = server
 
         # -- Tailscale Funnel thread --------------------------------------

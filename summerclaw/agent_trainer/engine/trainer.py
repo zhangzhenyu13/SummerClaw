@@ -258,7 +258,8 @@ class TrainerEngine:
         edit_budget: int = 4,
         seed: int = 42,
         workers: int = 4,
-        eval_test: bool = True,
+        eval_test: bool = False,
+        max_test_items: int = 0,
     ):
         self.algorithm = algorithm
         self.env = env
@@ -273,6 +274,7 @@ class TrainerEngine:
         self.seed = seed
         self.workers = workers
         self.eval_test = eval_test
+        self.max_test_items = max_test_items  # 0 = no limit
 
         # Runtime state
         self._current_skill = skill_init
@@ -376,11 +378,27 @@ class TrainerEngine:
         modules (reflect, aggregate, select, slow_update, meta_skill, etc.)
         into the dashboard event stream so the Gradio log window shows the
         same level of detail as the terminal.
+
+        Thread-safe: each sink only captures logs emitted from its own
+        training thread, preventing cross-contamination when multiple
+        engines run concurrently.
         """
         if self._loguru_sink_id is not None:
             return
 
+        # Capture the thread ID of the training thread.
+        # Each engine's train() runs in its own dedicated thread
+        # (created by scheduler._start_task or training.py _run).
+        # All algorithm module logging happens within this thread,
+        # so filtering by thread ID ensures per-task log isolation.
+        _train_thread_id = threading.get_ident()
+
         def _sink(message):
+            # Only capture logs from this engine's training thread.
+            # This prevents cross-contamination when multiple engines
+            # run concurrently and all install global loguru sinks.
+            if threading.get_ident() != _train_thread_id:
+                return
             if not self._running:
                 return
             rec = message.record
@@ -489,6 +507,9 @@ class TrainerEngine:
         if hasattr(self.env, "train_workspace"):
             self.env.train_workspace = self.out_dir
             self.env._workspace_ready = False
+        # Propagate task_id to env for session_key isolation
+        if hasattr(self.env, "_task_id"):
+            self.env._task_id = self.out_dir.name
         logger.info("Task directory created: {}", self.out_dir)
 
     def set_data_loader(self, loader: DataLoader) -> None:
@@ -512,6 +533,9 @@ class TrainerEngine:
         if hasattr(self.env, "train_workspace"):
             self.env.train_workspace = task_dir
             self.env._workspace_ready = False
+        # Propagate task_id to env for session_key isolation
+        if hasattr(self.env, "_task_id"):
+            self.env._task_id = task_dir.name
         # Try restoring data loader from uploaded_data.
         # Clear stale data_loader from a different task to prevent
         # cross-task data leakage (has_data() would otherwise return True
@@ -1001,6 +1025,16 @@ class TrainerEngine:
 
                 self._last_completed_epoch = epoch
                 self._emit("epoch_end_done", {"epoch": epoch})
+
+                # Check for convergence reported by algorithm (MOSCOPT)
+                if getattr(self.algorithm, 'converged', False):
+                    logger.info(
+                        "[TRAINER] algorithm reported convergence at epoch {} — stopping training",
+                        epoch,
+                    )
+                    self._cancel_requested = True
+                    self._emit("convergence_detected", {"epoch": epoch})
+                    break
 
                 # Update epoch tracking for next epoch's slow update
                 prev_epoch_results = curr_epoch_results
@@ -1775,6 +1809,15 @@ class TrainerEngine:
             except (KeyError, AttributeError):
                 test_items = []
             if test_items:
+                # Cap test items to avoid expensive full-set evaluation
+                if self.max_test_items > 0 and len(test_items) > self.max_test_items:
+                    import random as _rng
+                    _seed = getattr(self, 'seed', 42)
+                    test_items = _rng.Random(_seed).sample(test_items, self.max_test_items)
+                    logger.info(
+                        "[EVAL] test split capped to {} items (from {}) via max_test_items",
+                        len(test_items), len(self.data_loader.test.items),
+                    )
                 summary["test"] = await _eval_split("test", test_items)
             else:
                 logger.info("[EVAL] no test split available; skipping")

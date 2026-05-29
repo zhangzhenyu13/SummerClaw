@@ -11,7 +11,7 @@ from loguru import logger
 
 from summerclaw.agent_trainer.engine.trainer import TrainerEngine
 from summerclaw.agent_trainer.dashboard.task_utils import _default_train_root
-from summerclaw.agent_trainer.dashboard.api.scheduler import _TaskScheduler
+from summerclaw.agent_trainer.dashboard.api.scheduler import _TaskScheduler, EngineFactory
 from summerclaw.agent_trainer.dashboard.api.state import _DashboardState
 
 
@@ -19,8 +19,17 @@ def _create_api(
     engine: TrainerEngine,
     train_root: Path | None = None,
     active_sessions: dict | None = None,
+    engine_factory: EngineFactory | None = None,
 ):
-    """Create FastAPI APIRouter with all dashboard endpoints."""
+    """Create FastAPI APIRouter with all dashboard endpoints.
+
+    Parameters
+    ----------
+    engine_factory : callable, optional
+        Factory that creates a new independent ``TrainerEngine`` instance.
+        When provided, the scheduler uses it to create per-task engines so
+        that multiple tasks can run concurrently without sharing state.
+    """
     try:
         from fastapi import APIRouter
     except ImportError:
@@ -48,7 +57,7 @@ def _create_api(
 
     # -- Initialize scheduler ---------------------------------------------
 
-    scheduler = _TaskScheduler(engine, train_root, active_sessions)
+    scheduler = _TaskScheduler(engine, train_root, active_sessions, engine_factory=engine_factory)
     state.scheduler = scheduler
     # NOTE: scheduler.start() is deferred to the FastAPI lifespan so that
     # it runs inside the uvicorn event loop, not the background thread.

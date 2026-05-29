@@ -26,7 +26,13 @@ def register(router: APIRouter, state: _DashboardState) -> None:
         body = body or {}
         try:
             if state.engine.is_running:
-                return {"error": "Training already in progress."}
+                return {"error": "Training already in progress on shared engine."}
+
+            # Also check if any scheduler-managed engine is running for this task
+            if state.scheduler is not None:
+                _te = state.scheduler.get_task_engine(task_id)
+                if _te is not None and getattr(_te, "is_running", False):
+                    return {"error": f"Task {task_id} is already running (scheduler engine)."}
 
             # Guard: only idle (never started) or stopped (resume) tasks can be started.
             task_dir = state.train_root / task_id
@@ -133,13 +139,28 @@ def register(router: APIRouter, state: _DashboardState) -> None:
 
     @router.post("/api/tasks/{task_id}/cancel")
     async def cancel_training(task_id: str):
-        state.engine.request_cancel()
-        state._stop_requested = True
-        # Mark stop_requested on sessions so _scan_all_tasks can report "stopping"
+        # Cancel on per-task engine if it exists
+        _cancelled = False
+        if state.scheduler is not None:
+            _te = state.scheduler.get_task_engine(task_id)
+            if _te is not None:
+                _te.request_cancel()
+                _cancelled = True
+                logger.info("Cancel requested on scheduler engine for {}", task_id)
+        # Also cancel on shared engine if it's running this task
+        _task_dir_str = str(state.train_root / task_id)
+        _shared_running_task = str(state.engine.out_dir)
+        if state.engine.is_running and _task_dir_str == _shared_running_task:
+            state.engine.request_cancel()
+            state._stop_requested = True
+            _cancelled = True
+        # Mark stop_requested on sessions for this task
         for _sess in state.active_sessions.values():
-            if _sess.get("engine") is state.engine:
+            eng = _sess.get("engine")
+            rtd = _sess.get("running_task_dir")
+            if rtd and (rtd == _task_dir_str or str(Path(rtd)) == _task_dir_str):
                 _sess["stop_requested"] = True
         msg = f"Training stop requested — task: {task_id}"
         print(msg)
         state._fire_notify(msg)
-        return {"status": "cancel_requested"}
+        return {"status": "cancel_requested" if _cancelled else "no_running_task"}

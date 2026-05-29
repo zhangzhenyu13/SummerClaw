@@ -3,23 +3,22 @@
 import React, { useState, useEffect } from 'react';
 import {
   Card, Tabs, Descriptions, Tag, Button, Space, Input, Table,
-  message, Spin, Alert, List,
+  message, Spin, Alert, List, Checkbox,
 } from 'antd';
 import {
   PlayCircleOutlined, StopOutlined, CopyOutlined,
   DownloadOutlined, ArrowLeftOutlined, DatabaseOutlined,
   ClockCircleOutlined, TrophyOutlined, AimOutlined,
-  ExperimentOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   getTask, startTraining, cancelTraining, deploySkill,
   getTaskYaml, getTaskConfig, listTaskData, getTaskDataDownloadUrl,
-  runEvalTest, getEvalTest,
+  runEvalSingle, getEvalSingle,
 } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
-import type { TaskDetail, HistoryRow, EvalTestSummary } from '../api/types';
+import type { TaskDetail, HistoryRow, EvalSingleResult } from '../api/types';
 import { ScoreChart } from '../components/ScoreChart';
 import { BaselineBarChart } from '../components/BaselineBarChart';
 import { LogViewer } from '../components/LogViewer';
@@ -32,7 +31,11 @@ export const TaskDetailPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [deployName, setDeployName] = useState('');
   const [skillPath, setSkillPath] = useState('');
-  const [evalResult, setEvalResult] = useState<EvalTestSummary | null>(null);
+  // Individual eval results: keyed by "val_no_skill", "val_with_skill", etc.
+  const [evalResults, setEvalResults] = useState<Record<string, EvalSingleResult>>({});
+  const [evalSelectedKeys, setEvalSelectedKeys] = useState<string[]>([
+    'val_no_skill', 'val_with_skill', 'test_no_skill', 'test_with_skill',
+  ]);
   const [evalRunning, setEvalRunning] = useState(false);
 
   // Real-time polling
@@ -62,9 +65,9 @@ export const TaskDetailPage: React.FC = () => {
     if (!taskId) return;
     (async () => {
       try {
-        const res = await getEvalTest(taskId);
-        if (res.status === 'done' && res.summary) {
-          setEvalResult(res.summary);
+        const res = await getEvalSingle(taskId);
+        if (res.status === 'done' && res.results) {
+          setEvalResults(res.results);
         }
       } catch {
         // no eval results yet
@@ -115,30 +118,54 @@ export const TaskDetailPage: React.FC = () => {
     }
   };
 
-  const handleRunEval = async () => {
-    if (!taskId) return;
+  const EVAL_OPTIONS = [
+    { label: 'Val No Skill', value: 'val_no_skill' },
+    { label: 'Val Best Skill', value: 'val_with_skill' },
+    { label: 'Test No Skill', value: 'test_no_skill' },
+    { label: 'Test Best Skill', value: 'test_with_skill' },
+  ];
+
+  const handleRunEvalSelected = async () => {
+    if (!taskId || evalSelectedKeys.length === 0) return;
     setEvalRunning(true);
-    message.loading({ content: 'Running val+test evaluation…', key: 'eval', duration: 0 });
-    try {
-      const res = await runEvalTest(taskId) as Record<string, unknown>;
-      if (res.error) {
-        message.error({ content: String(res.error), key: 'eval' });
-      } else if (res.summary) {
-        setEvalResult(res.summary as EvalTestSummary);
-        message.success({ content: 'Evaluation complete', key: 'eval' });
-      } else {
-        message.success({ content: 'Evaluation complete', key: 'eval' });
-        // Reload from disk
-        const fresh = await getEvalTest(taskId);
-        if (fresh.status === 'done' && fresh.summary) {
-          setEvalResult(fresh.summary);
+    message.loading({ content: `Evaluating ${evalSelectedKeys.length} item(s)…`, key: 'eval', duration: 0 });
+    const newResults: Record<string, EvalSingleResult> = {};
+    let hasError = false;
+    for (const key of evalSelectedKeys) {
+      const [split, mode] = key.startsWith('val_')
+        ? ['val', key.slice(4)]
+        : ['test', key.slice(5)];
+      const withSkill = mode === 'with_skill';
+      const label = `${split} ${withSkill ? 'Best Skill' : 'No Skill'}`;
+      try {
+        const res = await runEvalSingle(taskId, split as 'val' | 'test', withSkill) as Record<string, unknown>;
+        if (res.error) {
+          message.warning({ content: `${label}: ${res.error}`, key: 'eval' });
+          hasError = true;
+        } else if (res.result) {
+          newResults[key] = res.result as EvalSingleResult;
         }
+      } catch {
+        message.warning({ content: `${label} evaluation failed`, key: 'eval' });
+        hasError = true;
+      }
+    }
+    // Merge new results into existing (update selected, keep others)
+    setEvalResults(prev => ({ ...prev, ...newResults }));
+    // Reload all results to get updated comparison data
+    try {
+      const fresh = await getEvalSingle(taskId);
+      if (fresh.status === 'done' && fresh.results) {
+        setEvalResults(fresh.results);
       }
     } catch {
-      message.error({ content: 'Evaluation failed', key: 'eval' });
-    } finally {
-      setEvalRunning(false);
+      // use merged results
     }
+    if (!hasError) {
+      const scores = Object.entries(newResults).map(([k, r]) => `${k}: ${r.score.toFixed(4)}`).join(', ');
+      message.success({ content: scores || 'Evaluation complete', key: 'eval' });
+    }
+    setEvalRunning(false);
   };
 
   // Show notification from realtime
@@ -169,10 +196,6 @@ export const TaskDetailPage: React.FC = () => {
     queued: { color: 'cyan', label: 'Queued (waiting for workers budget)' },
   };
   const tagInfo = STATUS_TAG[effectiveStatus] || { color: 'default', label: effectiveStatus };
-
-  // Score values for display
-  const bestScore = realtime?.status.best_score ?? detail.best_score;
-  const baselineScore = realtime?.status.baseline_score ?? detail.baseline_score ?? -1;
 
   // Start/Resume button logic:
   // - idle: can start fresh
@@ -240,17 +263,17 @@ export const TaskDetailPage: React.FC = () => {
               <Descriptions.Item label="Status">
                 <Tag color={tagInfo.color}>{tagInfo.label}</Tag>
               </Descriptions.Item>
-              <Descriptions.Item label={<><AimOutlined /> Val Baseline</>}>
-                {evalResult?.val ? evalResult.val.score_no_skill.toFixed(4) : '—'}
+              <Descriptions.Item label={<><AimOutlined /> Val No Skill</>}>
+                {evalResults.val_no_skill?.score != null ? evalResults.val_no_skill.score.toFixed(4) : '—'}
               </Descriptions.Item>
-              <Descriptions.Item label={<><TrophyOutlined /> Val Best</>}>
-                {evalResult?.val ? evalResult.val.score_with_skill.toFixed(4) : '—'}
+              <Descriptions.Item label={<><TrophyOutlined /> Val Best Skill</>}>
+                {evalResults.val_with_skill?.score != null ? evalResults.val_with_skill.score.toFixed(4) : '—'}
               </Descriptions.Item>
-              <Descriptions.Item label={<><AimOutlined /> Test Baseline</>}>
-                {evalResult?.test ? evalResult.test.score_no_skill.toFixed(4) : '—'}
+              <Descriptions.Item label={<><AimOutlined /> Test No Skill</>}>
+                {evalResults.test_no_skill?.score != null ? evalResults.test_no_skill.score.toFixed(4) : '—'}
               </Descriptions.Item>
-              <Descriptions.Item label={<><TrophyOutlined /> Test Best</>}>
-                {evalResult?.test ? evalResult.test.score_with_skill.toFixed(4) : '—'}
+              <Descriptions.Item label={<><TrophyOutlined /> Test Best Skill</>}>
+                {evalResults.test_with_skill?.score != null ? evalResults.test_with_skill.score.toFixed(4) : '—'}
               </Descriptions.Item>
               <Descriptions.Item label="Best Step">
                 {realtime?.status.best_step ?? detail.best_step}
@@ -331,15 +354,23 @@ export const TaskDetailPage: React.FC = () => {
               >
                 Copy to Create
               </Button>
-              <Button
-                block
-                icon={<ExperimentOutlined />}
-                disabled={!canRunEval}
-                loading={evalRunning}
-                onClick={handleRunEval}
-              >
-                {evalRunning ? 'Evaluating…' : 'Run Val+Test Eval'}
-              </Button>
+              <Card size="small" title="Eval" style={{ marginTop: 4 }}>
+                <Checkbox.Group
+                  options={EVAL_OPTIONS}
+                  value={evalSelectedKeys}
+                  onChange={(vals) => setEvalSelectedKeys(vals as string[])}
+                  disabled={!canRunEval}
+                  style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}
+                />
+                <Button
+                  type="primary" size="small" block
+                  disabled={!canRunEval || evalSelectedKeys.length === 0}
+                  loading={evalRunning}
+                  onClick={handleRunEvalSelected}
+                >
+                  Run Selected ({evalSelectedKeys.length})
+                </Button>
+              </Card>
             </Space>
           </div>
         </div>
@@ -365,14 +396,16 @@ export const TaskDetailPage: React.FC = () => {
             pagination={{ pageSize: 20, showSizeChanger: false }}
             scroll={{ y: 400 }}
           />
-          {(evalResult?.val || evalResult?.test || baselineScore >= 0 || bestScore >= 0) && (
-            <Card title="Baseline vs Best Score" style={{ marginTop: 16 }}>
-              <BaselineBarChart
-                baseline={baselineScore >= 0 ? baselineScore : 0}
-                best={bestScore >= 0 ? bestScore : 0}
-                valResult={evalResult?.val}
-                testResult={evalResult?.test}
-              />
+          {Object.keys(evalResults).length > 0 && (
+            <Card title="Eval Results" style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', gap: 24 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <EvalResultsTable results={evalResults} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <BaselineBarChart results={evalResults} />
+                </div>
+              </div>
             </Card>
           )}
           {(realtime?.chart.length ?? 0) > 0 && (
@@ -550,5 +583,225 @@ const YamlReadonlyTab: React.FC<{ taskId: string }> = ({ taskId }) => {
     <Card title="YAML" size="small">
       <YamlConfigViewer content={yamlContent} showRawToggle maxHeight={650} />
     </Card>
+  );
+};
+
+// -- Eval results table -----------------------------------------------------
+
+const EvalResultsTable: React.FC<{
+  results: Record<string, EvalSingleResult>;
+}> = ({ results }) => {
+  // Build rows from results
+  const rows = Object.entries(results).map(([key, r]) => ({
+    key,
+    split: r.split,
+    mode: r.with_skill ? 'Best Skill' : 'No Skill',
+    score: r.score,
+    n_total: r.stats?.n_total ?? r.n_items,
+    n_correct: r.stats?.n_correct ?? null,
+    n_timeout: r.stats?.n_timeout ?? null,
+    n_error: r.stats?.n_error ?? null,
+    success_rate: r.stats?.success_rate ?? null,
+    comparison: r.comparison,
+  }));
+
+  // Group by split for comparison display
+  const splits = [...new Set(rows.map(r => r.split))];
+
+  const columns = [
+    { title: 'Split', dataIndex: 'split', key: 'split', width: 60 },
+    { title: 'Mode', dataIndex: 'mode', key: 'mode', width: 80 },
+    {
+      title: 'Score',
+      dataIndex: 'score',
+      key: 'score',
+      width: 70,
+      render: (v: number) => v.toFixed(4),
+    },
+    {
+      title: 'Total',
+      dataIndex: 'n_total',
+      key: 'n_total',
+      width: 50,
+    },
+    {
+      title: 'Correct',
+      dataIndex: 'n_correct',
+      key: 'n_correct',
+      width: 60,
+      render: (v: number | null) => v != null ? v : '—',
+    },
+    {
+      title: 'Timeout',
+      dataIndex: 'n_timeout',
+      key: 'n_timeout',
+      width: 60,
+      render: (v: number | null) => {
+        if (v == null) return '—';
+        return <span style={{ color: v > 0 ? '#faad14' : undefined }}>{v}</span>;
+      },
+    },
+    {
+      title: 'Error',
+      dataIndex: 'n_error',
+      key: 'n_error',
+      width: 50,
+      render: (v: number | null) => {
+        if (v == null) return '—';
+        return <span style={{ color: v > 0 ? '#ff4d4f' : undefined }}>{v}</span>;
+      },
+    },
+    {
+      title: 'Rate',
+      dataIndex: 'success_rate',
+      key: 'success_rate',
+      width: 60,
+      render: (v: number | null) => v != null ? `${(v * 100).toFixed(1)}%` : '—',
+    },
+  ];
+
+  // Build comparison rows for splits that have both runs
+  const comparisonRows = splits
+    .map(split => {
+      const noSkillResult = results[`${split}_no_skill`];
+      const withSkillResult = results[`${split}_with_skill`];
+      if (!noSkillResult || !withSkillResult || !withSkillResult.comparison) {
+        return null;
+      }
+      const comp = withSkillResult.comparison;
+      const allDelta = comp.all_items.with_skill_score - comp.all_items.no_skill_score;
+      const completedDelta = comp.completed_items.with_skill_score - comp.completed_items.no_skill_score;
+      return {
+        key: split,
+        split: split.charAt(0).toUpperCase() + split.slice(1),
+        all_n: comp.all_items.n_total,
+        all_no_skill: comp.all_items.no_skill_score,
+        all_with_skill: comp.all_items.with_skill_score,
+        all_delta: allDelta,
+        completed_n: comp.completed_items.n_items,
+        completed_no_skill: comp.completed_items.no_skill_score,
+        completed_with_skill: comp.completed_items.with_skill_score,
+        completed_delta: completedDelta,
+        n_both_ok: comp.n_both_ok,
+        n_at_least_one_ok: comp.n_at_least_one_ok,
+        no_skill_rate: comp.no_skill_stats?.success_rate,
+        with_skill_rate: comp.with_skill_stats?.success_rate,
+      };
+    })
+    .filter(Boolean);
+
+  const comparisonColumns = [
+    { title: 'Split', dataIndex: 'split', key: 'split', width: 60 },
+    {
+      title: 'All Items',
+      children: [
+        { title: 'N', dataIndex: 'all_n', key: 'all_n', width: 40 },
+        {
+          title: 'No Skill',
+          dataIndex: 'all_no_skill',
+          key: 'all_no_skill',
+          width: 70,
+          render: (v: number) => v.toFixed(4),
+        },
+        {
+          title: 'Skill',
+          dataIndex: 'all_with_skill',
+          key: 'all_with_skill',
+          width: 70,
+          render: (v: number) => v.toFixed(4),
+        },
+        {
+          title: 'Delta',
+          dataIndex: 'all_delta',
+          key: 'all_delta',
+          width: 70,
+          render: (v: number) => (
+            <span style={{ color: v >= 0 ? '#52c41a' : '#ff4d4f' }}>
+              {v >= 0 ? '+' : ''}{v.toFixed(4)}
+            </span>
+          ),
+        },
+      ],
+    },
+    {
+      title: 'Completed Items',
+      children: [
+        { title: 'N', dataIndex: 'completed_n', key: 'completed_n', width: 40 },
+        {
+          title: 'No Skill',
+          dataIndex: 'completed_no_skill',
+          key: 'completed_no_skill',
+          width: 70,
+          render: (v: number) => v.toFixed(4),
+        },
+        {
+          title: 'Skill',
+          dataIndex: 'completed_with_skill',
+          key: 'completed_with_skill',
+          width: 70,
+          render: (v: number) => v.toFixed(4),
+        },
+        {
+          title: 'Delta',
+          dataIndex: 'completed_delta',
+          key: 'completed_delta',
+          width: 70,
+          render: (v: number) => (
+            <span style={{ color: v >= 0 ? '#52c41a' : '#ff4d4f' }}>
+              {v >= 0 ? '+' : ''}{v.toFixed(4)}
+            </span>
+          ),
+        },
+      ],
+    },
+    {
+      title: 'Both OK',
+      dataIndex: 'n_both_ok',
+      key: 'n_both_ok',
+      width: 60,
+    },
+    {
+      title: 'Success Rate',
+      children: [
+        {
+          title: 'No Skill',
+          dataIndex: 'no_skill_rate',
+          key: 'no_skill_rate',
+          width: 70,
+          render: (v: number | undefined) => v != null ? `${(v * 100).toFixed(1)}%` : '—',
+        },
+        {
+          title: 'Skill',
+          dataIndex: 'with_skill_rate',
+          key: 'with_skill_rate',
+          width: 70,
+          render: (v: number | undefined) => v != null ? `${(v * 100).toFixed(1)}%` : '—',
+        },
+      ],
+    },
+  ];
+
+  return (
+    <>
+      <Table
+        columns={columns}
+        dataSource={rows}
+        rowKey="key"
+        size="small"
+        pagination={false}
+      />
+      {comparisonRows.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ marginBottom: 8, fontWeight: 500 }}>Comparison (Skill vs No Skill)</div>
+          <Table
+            columns={comparisonColumns}
+            dataSource={comparisonRows}
+            rowKey="key"
+            size="small"
+            pagination={false}
+          />
+        </div>
+      )}
+    </>
   );
 };

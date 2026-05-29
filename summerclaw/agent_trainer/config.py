@@ -65,6 +65,17 @@ _DEFAULTS: dict[str, Any] = {
     "rejected_buffer_max_size": 10,
     "rejected_buffer_max_summary_chars": 200,
 
+    # MOSCOPT-specific
+    "pool_size": 5,
+    "activate_count": 2,
+    "evolution_interval": 5,
+    "evolution_count": 1,
+    "gating_granularity": "task",
+    "ema_beta": 0.3,
+    "min_activations": 5,
+    "diversity_threshold": 0.85,
+    "val_sample_ratio": 1.0,
+
     # Rewrite
     "reasoning_effort": "high",
     "rewrite_reasoning_effort": "",
@@ -176,6 +187,16 @@ _FLATTEN_MAP: dict[str, str] = {
     "optimizer.use_rejected_buffer": "use_rejected_buffer",
     "optimizer.rejected_buffer_max_size": "rejected_buffer_max_size",
     "optimizer.rejected_buffer_max_summary_chars": "rejected_buffer_max_summary_chars",
+    # MOSCOPT-specific (optimizer section)
+    "optimizer.pool_size": "pool_size",
+    "optimizer.activate_count": "activate_count",
+    "optimizer.evolution_interval": "evolution_interval",
+    "optimizer.evolution_count": "evolution_count",
+    "optimizer.gating_granularity": "gating_granularity",
+    "optimizer.ema_beta": "ema_beta",
+    "optimizer.min_activations": "min_activations",
+    "optimizer.diversity_threshold": "diversity_threshold",
+    "optimizer.val_sample_ratio": "val_sample_ratio",
     # evaluation section
     "evaluation.use_gate": "use_gate",
     "evaluation.sel_env_num": "sel_env_num",

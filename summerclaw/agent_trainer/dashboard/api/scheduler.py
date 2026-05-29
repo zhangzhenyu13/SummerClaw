@@ -2,17 +2,25 @@
 
 Implements a workers-budget scheduler that controls how many training
 tasks run concurrently based on ``maxConcurrency`` from system config.
+
+Each task gets its own independent ``TrainerEngine`` instance (created via
+*engine_factory*) so that concurrent tasks do not share mutable engine state
+(events, out_dir, data_loader, etc.).
 """
 from __future__ import annotations
 
 import asyncio
 import threading as _threading
 from pathlib import Path
+from typing import Callable
 
 from loguru import logger
 
 from summerclaw.agent_trainer.engine.trainer import TrainerEngine, _load_json, _save_json
 from summerclaw.agent_trainer.dashboard.task_utils import _is_task_actually_running
+
+# Type alias for the engine factory callable.
+EngineFactory = Callable[[], TrainerEngine]
 
 
 class _TaskScheduler:
@@ -34,14 +42,19 @@ class _TaskScheduler:
         engine: TrainerEngine,
         train_root: Path,
         active_sessions: dict,
+        engine_factory: EngineFactory | None = None,
     ):
-        self.engine = engine
+        self.engine = engine  # template / fallback engine
         self.train_root = train_root
         self.active_sessions = active_sessions
+        self._engine_factory = engine_factory
         self._idle_pending: dict[str, float] = {}   # task_id → created_ts
         self._queued: list[str] = []                  # FIFO order
         self._bg_task: asyncio.Task | None = None
         self._running = False
+        # Per-task engine instances (task_id → engine)
+        self._task_engines: dict[str, TrainerEngine] = {}
+        self._task_engines_lock = _threading.Lock()
 
     # -- lifecycle --------------------------------------------------------
 
@@ -101,6 +114,16 @@ class _TaskScheduler:
                     return pmc
         return 20
 
+    def get_task_engine(self, task_id: str) -> TrainerEngine | None:
+        """Return the engine instance for a running task, or *None*."""
+        with self._task_engines_lock:
+            return self._task_engines.get(task_id)
+
+    def get_all_task_engines(self) -> dict[str, TrainerEngine]:
+        """Return a snapshot of all running per-task engines."""
+        with self._task_engines_lock:
+            return dict(self._task_engines)
+
     def used_workers(self) -> int:
         """Sum of effective workers consumed by currently running tasks.
 
@@ -119,6 +142,15 @@ class _TaskScheduler:
                 if td_str not in seen_dirs:
                     seen_dirs.add(td_str)
                     total += self._effective_workers_for_dir(td)
+
+        # 1b) From per-task engines managed by this scheduler
+        with self._task_engines_lock:
+            for tid, eng in self._task_engines.items():
+                if getattr(eng, "is_running", False):
+                    td_str = str(eng.out_dir)
+                    if td_str not in seen_dirs:
+                        seen_dirs.add(td_str)
+                        total += self._effective_workers_for_dir(eng.out_dir)
 
         # 2) Fallback: scan train_root for tasks with fresh PID+heartbeat
         #    (covers cases where active_sessions is empty, e.g. after restart)
@@ -173,6 +205,15 @@ class _TaskScheduler:
                     seen_dirs.add(td_str)
                     tid = td.name
                     running_tasks[tid] = self._effective_workers_for_dir(td)
+
+        # 1b) From per-task engines
+        with self._task_engines_lock:
+            for tid, eng in self._task_engines.items():
+                if getattr(eng, "is_running", False):
+                    td_str = str(eng.out_dir)
+                    if td_str not in seen_dirs:
+                        seen_dirs.add(td_str)
+                        running_tasks[tid] = self._effective_workers_for_dir(eng.out_dir)
 
         # 2) Fallback: scan train_root for tasks with fresh PID+heartbeat
         if self.train_root.is_dir():
@@ -309,13 +350,46 @@ class _TaskScheduler:
         _save_json(str(rt_path), state)
 
     async def _start_task(self, task_id: str) -> dict:
-        """Programmatically start training for a task (scheduler path)."""
+        """Programmatically start training for a task (scheduler path).
+
+        Creates an independent ``TrainerEngine`` via *engine_factory* so that
+        concurrent tasks do not share mutable engine state.
+        """
         logger.info("[Scheduler] starting task: {}", task_id)
         self._write_status(task_id, "running")
 
         try:
             task_dir = self.train_root / task_id
-            engine = self.engine
+
+            # ---- obtain an independent engine ----------------------------
+            if self._engine_factory is not None:
+                try:
+                    engine = self._engine_factory()
+                    logger.info(
+                        "[Scheduler] created independent engine for {}",
+                        task_id,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[Scheduler] engine_factory failed for {}: {}",
+                        task_id, exc, exc_info=True,
+                    )
+                    self._write_status(task_id, "failed")
+                    self.unregister(task_id)
+                    return {"error": f"engine_factory failed: {exc}"}
+            else:
+                # Fallback: use the shared template engine (sequential only)
+                if self.engine.is_running:
+                    msg = (
+                        f"Cannot start {task_id}: shared engine is busy. "
+                        f"Set engine_factory for concurrent tasks."
+                    )
+                    logger.warning("[Scheduler] {}", msg)
+                    self._write_status(task_id, "queued")
+                    if task_id not in self._queued:
+                        self._queued.append(task_id)
+                    return {"error": msg}
+                engine = self.engine
 
             # Point engine at this task
             if str(task_dir) != str(engine.out_dir):
@@ -428,11 +502,18 @@ class _TaskScheduler:
                 self.unregister(task_id)
                 return {"error": msg}
 
-            # Record running_task_dir
+            # Register this engine in the per-task map
+            with self._task_engines_lock:
+                self._task_engines[task_id] = engine
+
+            # Record running_task_dir in active_sessions
+            # Use a unique session key per task to avoid collisions
+            _session_key = f"scheduler:{task_id}"
             _tds = str(engine.out_dir)
-            for _sess in self.active_sessions.values():
-                if _sess.get("engine") is engine:
-                    _sess["running_task_dir"] = _tds
+            self.active_sessions[_session_key] = {
+                "engine": engine,
+                "running_task_dir": _tds,
+            }
 
             def _run():
                 loop = asyncio.new_event_loop()
@@ -445,10 +526,11 @@ class _TaskScheduler:
                         task_id, exc, exc_info=True,
                     )
                 finally:
-                    for _sess in self.active_sessions.values():
-                        if _sess.get("engine") is engine:
-                            _sess.pop("running_task_dir", None)
-                            _sess.pop("stop_requested", None)
+                    # Clean up session
+                    self.active_sessions.pop(_session_key, None)
+                    # Remove from per-task engines
+                    with self._task_engines_lock:
+                        self._task_engines.pop(task_id, None)
                     # Let the scheduler promote queued tasks now that budget is freed.
                     self.on_task_finished(task_id)
                     loop.close()

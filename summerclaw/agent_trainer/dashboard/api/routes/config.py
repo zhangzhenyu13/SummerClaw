@@ -124,7 +124,12 @@ def register(router: APIRouter, state: _DashboardState) -> None:
         }
 
     @router.get("/api/logs")
-    async def get_logs():
+    async def get_logs(task_id: str = ""):
+        """Return recent log events. If task_id is given and has its own engine, use that."""
+        if task_id and state.scheduler is not None:
+            _te = state.scheduler.get_task_engine(task_id)
+            if _te is not None:
+                return {"logs": state.get_log_events_for_engine(_te)}
         with state.engine._events_lock:
             recent = list(state.engine._events[-100:])
         return {"logs": recent}

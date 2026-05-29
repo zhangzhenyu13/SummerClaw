@@ -13,6 +13,140 @@ if TYPE_CHECKING:
     from summerclaw.agent_trainer.dashboard.api.state import _DashboardState
 
 
+def _get_split_count(engine, split: str) -> int:
+    """Get number of items in a data split."""
+    try:
+        return len(engine.data_loader.get_split(split).items)
+    except (KeyError, AttributeError):
+        return -1
+
+
+def _compute_breakdown_stats(per_item_results: list) -> dict:
+    """Compute breakdown stats from per-item rollout results.
+
+    Returns dict with n_total, n_correct, n_timeout, n_error, success_rate.
+    """
+    n_total = len(per_item_results)
+    if n_total == 0:
+        return {
+            "n_total": 0,
+            "n_correct": 0,
+            "n_timeout": 0,
+            "n_error": 0,
+            "success_rate": 0.0,
+        }
+
+    n_correct = sum(1 for r in per_item_results if r.hard == 1)
+    n_timeout = sum(
+        1 for r in per_item_results
+        if r.fail_reason and r.fail_reason.startswith("rollout_timeout")
+    )
+    n_error = sum(
+        1 for r in per_item_results
+        if r.fail_reason and not r.fail_reason.startswith("rollout_timeout") and r.hard == 0
+    )
+
+    return {
+        "n_total": n_total,
+        "n_correct": n_correct,
+        "n_timeout": n_timeout,
+        "n_error": n_error,
+        "success_rate": round(n_correct / n_total, 6) if n_total > 0 else 0.0,
+    }
+
+
+def _compute_comparison(eval_dir: Path, split: str) -> dict | None:
+    """Compute comparison metrics when both with_skill and no_skill results exist.
+
+    Returns dict with:
+    - all_items: score on all items (timeouts = 0)
+    - completed_items: score only on items where BOTH runs completed (no timeout/error)
+    - n_total, n_completed_both, n_both_ok, n_at_least_one_ok
+    - no_skill_success_rate, with_skill_success_rate
+    """
+    no_skill_file = eval_dir / f"{split}_no_skill_items.json"
+    with_skill_file = eval_dir / f"{split}_with_skill_items.json"
+    no_skill_result_file = eval_dir / f"{split}_no_skill.json"
+    with_skill_result_file = eval_dir / f"{split}_with_skill.json"
+
+    if not (no_skill_file.is_file() and with_skill_file.is_file()):
+        return None
+    if not (no_skill_result_file.is_file() and with_skill_result_file.is_file()):
+        return None
+
+    from summerclaw.agent_trainer.engine.trainer import _load_json
+
+    no_skill_items = _load_json(str(no_skill_file)) or []
+    with_skill_items = _load_json(str(with_skill_file)) or []
+    no_skill_data = _load_json(str(no_skill_result_file)) or {}
+    with_skill_data = _load_json(str(with_skill_result_file)) or {}
+
+    # Build lookup by item id
+    no_skill_map = {item["id"]: item for item in no_skill_items}
+    with_skill_map = {item["id"]: item for item in with_skill_items}
+
+    n_total = len(no_skill_items)
+
+    # Items where BOTH runs completed (no timeout/error in either)
+    completed_both_ids = [
+        item_id for item_id in no_skill_map.keys()
+        if item_id in with_skill_map
+        and not no_skill_map[item_id].get("fail_reason", "")
+        and not with_skill_map[item_id].get("fail_reason", "")
+    ]
+    n_completed_both = len(completed_both_ids)
+
+    # Score on completed items
+    if n_completed_both > 0:
+        completed_no_skill_score = sum(
+            no_skill_map[item_id].get("hard", 0)
+            for item_id in completed_both_ids
+        ) / n_completed_both
+        completed_with_skill_score = sum(
+            with_skill_map[item_id].get("hard", 0)
+            for item_id in completed_both_ids
+        ) / n_completed_both
+    else:
+        completed_no_skill_score = 0.0
+        completed_with_skill_score = 0.0
+
+    # Items where both succeeded
+    both_ok_ids = [
+        item_id for item_id in no_skill_map.keys()
+        if item_id in with_skill_map
+        and no_skill_map[item_id].get("hard") == 1
+        and with_skill_map[item_id].get("hard") == 1
+    ]
+    n_both_ok = len(both_ok_ids)
+
+    # Items where at least one succeeded
+    at_least_one_ok_ids = set()
+    for item_id, item in no_skill_map.items():
+        if item.get("hard") == 1:
+            at_least_one_ok_ids.add(item_id)
+    for item_id, item in with_skill_map.items():
+        if item.get("hard") == 1:
+            at_least_one_ok_ids.add(item_id)
+    n_at_least_one_ok = len(at_least_one_ok_ids)
+
+    return {
+        "all_items": {
+            "no_skill_score": no_skill_data.get("score", 0.0),
+            "with_skill_score": with_skill_data.get("score", 0.0),
+            "n_total": n_total,
+        },
+        "completed_items": {
+            "no_skill_score": round(completed_no_skill_score, 6),
+            "with_skill_score": round(completed_with_skill_score, 6),
+            "n_items": n_completed_both,
+        },
+        "n_both_ok": n_both_ok,
+        "n_at_least_one_ok": n_at_least_one_ok,
+        "no_skill_stats": no_skill_data.get("stats", {}),
+        "with_skill_stats": with_skill_data.get("stats", {}),
+    }
+
+
 def register(router: APIRouter, state: _DashboardState) -> None:
     """Register task CRUD routes on *router*."""
     from summerclaw.agent_trainer.engine.trainer import _load_json, _save_json
@@ -273,6 +407,122 @@ def register(router: APIRouter, state: _DashboardState) -> None:
             data = _load_json(str(p)) or {}
             return {"status": "done", "summary": data}
         return {"status": "not_found"}
+
+    # ------------------------------------------------------------------
+    # Single evaluation (one split × with/without skill)
+    # ------------------------------------------------------------------
+
+    @router.post("/api/tasks/{task_id}/eval_single")
+    async def run_single_evaluation(task_id: str, body: dict = None):
+        """Run a single evaluation: one split with or without skill.
+
+        Body params:
+          - split: "val" | "test"  (default "val")
+          - with_skill: bool       (default False)
+
+        Returns per-item breakdown stats and comparison when both runs exist.
+        """
+        body = body or {}
+        split = body.get("split", "val")
+        with_skill = bool(body.get("with_skill", False))
+
+        try:
+            if state.engine.is_running:
+                return {"error": "Cannot run eval while training is in progress."}
+
+            state._maybe_restore_task(task_id)
+            state.engine._ensure_out_dir()
+
+            # Auto-load data from task directory if not already loaded
+            if not state.engine.has_data():
+                task_dir = state.train_root / task_id
+                data_root = task_dir / "uploaded_data"
+                if not data_root.is_dir():
+                    for entry in sorted(state.train_root.iterdir()):
+                        candidate = entry / "uploaded_data"
+                        if candidate.is_dir():
+                            data_root = candidate
+                            break
+                if data_root.is_dir():
+                    from summerclaw.agent_trainer.datasets.loader import DataLoader
+                    loader = DataLoader(str(data_root))
+                    if loader.split_names:
+                        state.engine.set_data_loader(loader)
+
+            if not state.engine.has_data():
+                return {"error": "No data loaded for this task. Upload data first."}
+
+            # Load best skill from disk for this task
+            task_dir = state.train_root / task_id
+            best_skill_path = task_dir / "best_skill.md"
+            if best_skill_path.is_file():
+                content = best_skill_path.read_text(encoding="utf-8")
+                state.engine._best_skill = content
+                state.engine._current_skill = content
+            else:
+                skill_dir = task_dir / "skills"
+                if skill_dir.is_dir():
+                    files = sorted(skill_dir.glob("*.md"))
+                    if files:
+                        content = files[-1].read_text(encoding="utf-8")
+                        state.engine._best_skill = content
+                        state.engine._current_skill = content
+
+            # Run single eval
+            score = await state.engine.eval_only(
+                split=split, with_skill=with_skill,
+            )
+
+            # Compute breakdown stats from per-item results
+            per_item_results = getattr(state.engine.algorithm, '_last_rollout_results', [])
+            stats = _compute_breakdown_stats(per_item_results)
+
+            # Persist result to disk
+            eval_dir = task_dir / "eval_single"
+            eval_dir.mkdir(parents=True, exist_ok=True)
+            result_key = f"{split}_{'with_skill' if with_skill else 'no_skill'}"
+            result_file = eval_dir / f"{result_key}.json"
+
+            # Save per-item results for comparison
+            per_item_file = eval_dir / f"{result_key}_items.json"
+            per_item_data = [
+                {"id": r.id, "hard": r.hard, "fail_reason": r.fail_reason}
+                for r in per_item_results
+            ]
+            _save_json(str(per_item_file), per_item_data)
+
+            result_data = {
+                "split": split,
+                "with_skill": with_skill,
+                "score": round(score, 6),
+                "n_items": stats["n_total"],
+                "stats": stats,
+            }
+
+            # Compute comparison when both skill/no_skill results exist for this split
+            comparison = _compute_comparison(eval_dir, split)
+            if comparison:
+                result_data["comparison"] = comparison
+
+            _save_json(str(result_file), result_data)
+
+            return {"status": "done", "task_id": task_id, "result": result_data}
+        except Exception as exc:
+            return {"error": f"Single evaluation failed: {exc}"}
+
+    @router.get("/api/tasks/{task_id}/eval_single")
+    async def get_single_evaluation(task_id: str):
+        """Return all cached single-eval results."""
+        task_dir = state.train_root / task_id
+        eval_dir = task_dir / "eval_single"
+        results = {}
+        if eval_dir.is_dir():
+            for f in sorted(eval_dir.glob("*.json")):
+                key = f.stem  # e.g. "val_with_skill"
+                data = _load_json(str(f))
+                if data:
+                    results[key] = data
+        return {"status": "done" if results else "not_found", "results": results}
 
     # ------------------------------------------------------------------
     # Deploy skill

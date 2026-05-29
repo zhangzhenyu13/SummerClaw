@@ -299,6 +299,82 @@ def start_dashboard_from_agent(
             engine.set_data_loader(loader)
             logger.info("Pre-loaded data from {}: {}", data_dir, loader.summary())
 
+    # ---- Engine factory: creates independent engines for concurrent tasks ----
+    _provider = provider
+    _model = model
+    _workspace = workspace
+    _train_root = train_root
+    _memory_algorithm_name = memory_algorithm_name
+    _algo_cls = algo_cls
+    _trainer_cfg = trainer_cfg
+    _skill_init = skill_init
+    _skill_init_path = skill_init_path
+    _context_window_tokens = getattr(agent, "context_window_tokens", 8000)
+    _max_iterations = getattr(agent, "max_iterations", 10)
+    _max_tool_result_chars = getattr(agent, "max_tool_result_chars", 4000)
+    _tool_registry = getattr(agent, "tools", None)
+
+    def _engine_factory() -> TrainerEngine:
+        """Create a new independent TrainerEngine for a concurrent task."""
+        from summerclaw.agent_trainer.env.summerclaw_env import SummerClawEnvAdapter
+
+        _new_env = SummerClawEnvAdapter(
+            provider=_provider,
+            model=_model,
+            workspace=_workspace,
+            train_out_dir=_train_root,
+            memory_algorithm_name=_memory_algorithm_name,
+            context_window_tokens=_context_window_tokens,
+            max_tool_iterations=_max_iterations,
+            max_tool_result_chars=_max_tool_result_chars,
+            temperature=0.7,
+            max_tokens=8192,
+            workers=_trainer_cfg.get("workers", 0),
+            tool_registry=_tool_registry,
+        )
+
+        _new_algo = _algo_cls(
+            provider=_provider,
+            model=_model,
+            minibatch_size=_trainer_cfg.get("minibatch_size", 5),
+            edit_budget=_trainer_cfg.get("edit_budget", 4),
+            workers=_trainer_cfg.get("workers", 0),
+            optimizer_model=_trainer_cfg.get("optimizer_model"),
+            update_mode=_trainer_cfg.get("update_mode", "patch"),
+            lr_mode=_trainer_cfg.get("lr_mode", "constant"),
+            min_lr=_trainer_cfg.get("min_lr", 2),
+            reasoning_effort=_trainer_cfg.get("reasoning_effort", "high"),
+            env=_trainer_cfg.get("env"),
+            merge_batch_size=_trainer_cfg.get("merge_batch_size", 8),
+            max_analyst_rounds=_trainer_cfg.get("max_analyst_rounds", 3),
+            use_slow_update=_trainer_cfg.get("use_slow_update", True),
+            use_meta_skill=_trainer_cfg.get("use_meta_skill", True),
+            longitudinal_pair_policy=_trainer_cfg.get("longitudinal_pair_policy", "mixed"),
+            rewrite_reasoning_effort=_trainer_cfg.get("rewrite_reasoning_effort"),
+            rewrite_max_completion_tokens=_trainer_cfg.get("rewrite_max_completion_tokens", 64000),
+        )
+        # Per-stage workers overrides
+        for attr in ("analyst_workers", "aggregate_workers", "evaluate_workers"):
+            v = _trainer_cfg.get(attr, 0)
+            if v > 0:
+                setattr(_new_algo, attr, v)
+
+        _new_engine = TrainerEngine(
+            algorithm=_new_algo,
+            env=_new_env,
+            data_loader=None,
+            out_dir=_train_root,
+            skill_init=_skill_init,
+            skill_init_path=_skill_init_path,
+            num_epochs=_trainer_cfg.get("num_epochs", 3),
+            batch_size=_trainer_cfg.get("batch_size", 5),
+            edit_budget=_trainer_cfg.get("edit_budget", 4),
+            seed=_trainer_cfg.get("seed", 42),
+            eval_test=_trainer_cfg.get("eval_test", True),
+        )
+        _new_engine._trainer_cfg = dict(_trainer_cfg)
+        return _new_engine
+
     port = dashboard_port or trainer_cfg.get("dashboard_port", 443)
     dashboard = DashboardServer(
         engine=engine,
@@ -306,6 +382,7 @@ def start_dashboard_from_agent(
         share=share,
         train_root=train_root,
         active_sessions=_ACTIVE_TRAININGS,
+        engine_factory=_engine_factory,
     )
     dashboard_url = dashboard.start()
 

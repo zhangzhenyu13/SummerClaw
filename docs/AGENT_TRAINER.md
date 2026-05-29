@@ -420,9 +420,181 @@ Avoid generating similar or identical edits.
 
 ---
 
-## 2. 训练循环与控制流
+## 2. MOSCOPT — 混合技能集体优化
 
-### 2.1 完整训练流程
+MOSCOPT（Mixture-Of-Skill Collective OPTimization）是 SkillOpt 的多技能扩展，将优化对象从单个技能扩展为**技能池与门控调度器的联合文本集合**。当任务具有多阶段、多策略互补需求时，MOSCOPT 可通过门控动态组合技能，获得比单技能更强的探索能力和鲁棒性。
+
+> **向后兼容**：当 `pool_size=1, activate_count=1` 时，MOSCOPT 完全退化为 SkillOpt，无需维护两套代码。
+
+### 2.1 核心架构
+
+```
+                    ┌──────────────────────────────────────┐
+                    │          TrainerEngine               │
+                    │   (算法无关的训练循环编排器)          │
+                    └──────────────┬───────────────────────┘
+                                   │
+             ┌─────────────────────┼─────────────────────┐
+             │                     │                     │
+   ┌─────────▼─────────┐  ┌───────▼──────────┐  ┌───────▼────────┐
+   │ SummerClawEnvAdapter│  │ MOSCOPTAlgorithm │  │   DataLoader   │
+   │ (Agent 环境适配)    │  │ (多技能池 + 门控) │  │ (数据加载)     │
+   └────────────────────┘  └──────────────────┘  └────────────────┘
+                                    │
+                     ┌──────────────┼──────────────┐
+                     │              │              │
+              ┌──────▼─────┐ ┌─────▼─────┐ ┌─────▼──────┐
+              │ SkillPool  │ │ Gate G    │ │ Collective  │
+              │ {s1..sN}   │ │ (文本门控) │ │ Evolution   │
+              └────────────┘ └───────────┘ └────────────┘
+```
+
+MOSCOPT 维护三层数据结构：
+
+| 组件 | 说明 | 类比 |
+|------|------|------|
+| **技能池** S = {s1..sN} | N 个文本技能，每个含 Slow Update 保护区 | 多种群生态 |
+| **门控** G | 文本调度器，根据摘要选择 K 个技能激活 | 路由器 |
+| **集体进化** | 淘汰/繁殖/合并，每 E 个 epoch 触发 | 进化算法 |
+
+### 2.2 三阶段交错更新
+
+MOSCOPT 同样使用 6 阶段 Pipeline（rollout → reflect → aggregate → select → update → evaluate），但增加了**三阶段交错更新**策略，避免技能与门控同时变化导致的优化震荡：
+
+| 阶段 | 固定组件 | 编辑组件 | 说明 |
+|------|---------|---------|------|
+| **Phase 1: 技能编辑** | 门控 G | 技能 s_i | 按失败贡献排序，依次对候选技能执行 6 阶段 pipeline |
+| **Phase 2: 门控编辑** | 技能池 S | 门控 G | 从轨迹中提取门控选择错误，生成有界编辑 |
+| **Phase 3: 集体进化** | — | 池结构 | 每 E 个 epoch 触发淘汰/繁殖/合并 |
+
+### 2.3 门控机制与渐进披露
+
+门控 G 是一个文本技能（自然语言调度器），在每个任务或执行步骤中，根据**渐进披露的技能摘要**选择 K 个技能激活：
+
+**门控粒度**（`optimizer.gating_granularity`）：
+
+| 粒度 | 配置值 | 行为 | 适用场景 |
+|------|--------|------|----------|
+| Task-level（默认） | `task` | 每任务选一次 K 个技能 | 单轮 QA、短轨迹 |
+| Step-level | `step` | 每个 item 独立调用门控 LLM | 长程多步任务 |
+
+**渐进披露三维度**：
+- **空间维度**：仅激活的 K 个技能全量加载，未激活技能对 Agent 完全不可见
+- **时间维度**：摘要表信息随 epoch 逐步丰富（初期仅 ID+标签 → 中期+Q-score → 后期+共现统计）
+- **策略维度**：step-level gating 下，轨迹内不同步骤可激活不同技能组合
+
+**回退规则**：门控 LLM 输出无法解析时，自动回退到基于 Q-score 的 top-K 选择，并记录为编辑信号反馈给门控优化。
+
+### 2.4 集体评分与归因
+
+| 机制 | 说明 |
+|------|------|
+| **Q-score EMA** | Q(s_i) = EMA(激活步数加权回报)，平滑跨 epoch 波动 |
+| **协同得分** | 共现频率计数，用于指导协同繁殖和保护高协同技能对 |
+| **门控归因** | 记录每次激活组合的结果，通过 Reflect 分析选择错误模式 |
+
+### 2.5 集体进化（Phase 3）
+
+每 E 个 epoch 触发一次，执行以下操作：
+
+1. **淘汰**：移除 Q-score 最低的 M 个技能（保护高协同技能对）
+2. **繁殖**：从高分技能中选取亲本，LLM 变异生成新技能（继承 Slow Update 保护区的稳定规则）
+3. **协同合并**：高共现技能对通过专用合并提示蒸馏为统一技能
+4. **多样性检查**：文本相似度超阈值时，注入外来基因 + 强制变异
+5. **摘要更新**：刷新技能摘要表，渐进式丰富信息
+
+### 2.6 收敛检测
+
+三重信号 2/3 投票制判定收敛：
+- **分数稳定性**：滑动窗口方差 < 阈值
+- **池规模稳定性**：相邻 epoch 池大小无变化
+- **门控分布集中度**：选择熵 < 最大熵的 30%
+
+### 2.7 何时使用 MOSCOPT
+
+```
+任务是单轮 QA / 短轨迹？
+├── 是 → SkillOpt（简单高效，无额外开销）
+└── 否 → 任务有多个明显阶段？
+    ├── 是 + 阶段间策略差异大 → MOSCOPT (task-level)
+    └── 是 + 长程多步交互 → MOSCOPT (step-level)
+```
+
+**简而言之**：SkillOpt 是默认选择；当任务具有多阶段、多策略互补需求且计算预算允许时，升级到 MOSCOPT。
+
+### 2.8 配置参数
+
+MOSCOPT 复用 SkillOpt 的所有基础配置（`train`、`gradient`、`evaluation`、`env`），并在 `optimizer` 分区增加以下专属参数：
+
+| YAML 配置键 | 默认值 | 说明 |
+|------------|--------|------|
+| `optimizer.pool_size` | `5` | 技能池大小 N（淘汰/繁殖后保持恒定） |
+| `optimizer.activate_count` | `2` | 每次激活的技能数 K（1 ≤ K ≤ N） |
+| `optimizer.evolution_interval` | `5` | 集体进化触发间隔（每 E 个 epoch） |
+| `optimizer.evolution_count` | `1` | 每轮淘汰/繁殖的技能数 M |
+| `optimizer.gating_granularity` | `task` | 门控粒度：`task` 或 `step` |
+| `optimizer.ema_beta` | `0.3` | Q-score EMA 平滑系数 |
+| `optimizer.min_activations` | `5` | Q-score 生效的最低激活次数阈值 |
+| `optimizer.diversity_threshold` | `0.85` | 触发强制变异的相似度阈值 |
+| `optimizer.val_sample_ratio` | `1.0` | 验证集采样比例（1.0 = 全量） |
+
+**约束规则**：
+- K ≤ N（系统自动校正）
+- N ≥ K + M（否则集体进化可能导致池缩小到 K 以下）
+- K/N > 0.8 时系统发出警告（门控选择空间过小）
+
+#### 配置示例
+
+```yaml
+# MOSCOPT 训练配置示例
+train:
+  num_epochs: 8
+  batch_size: 30
+  workers: 0          # 自动推导 80% × maxConcurrency
+
+optimizer:
+  learning_rate: 6           # 每步最大编辑数
+  min_learning_rate: 2
+  lr_scheduler: cosine
+  skill_update_mode: patch
+  use_slow_update: true
+  use_meta_skill: true
+  use_rejected_buffer: true
+  # ── MOSCOPT 专属 ──
+  pool_size: 5               # N: 技能池大小
+  activate_count: 2          # K: 每次激活数
+  evolution_interval: 5      # E: 每 5 个 epoch 触发集体进化
+  evolution_count: 1         # M: 每轮淘汰/繁殖数
+  gating_granularity: task   # task-level 门控
+  ema_beta: 0.3
+  min_activations: 5
+  val_sample_ratio: 0.5      # 采样 50% 验证集（降低开销）
+
+gradient:
+  minibatch_size: 8
+  merge_batch_size: 8
+
+env:
+  split_mode: ratio
+  split_ratio: "2:1:7"
+  memory_algorithm: null
+  enabled_tools: []
+```
+
+### 2.9 Dashboard API
+
+MOSCOPT 提供额外的 Dashboard API 端点，用于实时监控技能池状态：
+
+| 端点 | 说明 |
+|------|------|
+| `GET /api/tasks/{task_id}/pool` | 当前池状态（Q-scores、激活计数、共现矩阵、门控文本、收敛状态） |
+| `GET /api/tasks/{task_id}/pool/history` | 历次 epoch 快照（Q-score 曲线、池组成变化、收敛时间点） |
+
+---
+
+## 3. 训练循环与控制流
+
+### 3.1 完整训练流程
 
 ```
 初始化:
@@ -450,7 +622,7 @@ Avoid generating similar or identical edits.
   保留 best_skill.md 供部署
 ```
 
-### 2.2 断点续训
+### 3.2 断点续训
 
 每步结束后持久化以下状态：
 - `skills/skill_v{step:04d}.md` — 当前 Skill 快照
@@ -460,15 +632,15 @@ Avoid generating similar or identical edits.
 
 重启时 `_load_state()` 自动检测并从上次的 next step 恢复。
 
-### 2.3 取消机制
+### 3.3 取消机制
 
 通过 `request_cancel()` 设置取消标志，训练循环在每个 epoch 和每个 step 的开始检查该标志，实现优雅退出。
 
 ---
 
-## 3. 关键设计决策
+## 4. 关键设计决策
 
-### 3.1 Minibatch Reflect vs 全量 Reflect
+### 4.1 Minibatch Reflect vs 全量 Reflect
 
 **选择 Minibatch**：将轨迹按 M=5 分组并行分析，而非一次性将所有轨迹喂给 LLM。
 
@@ -477,26 +649,26 @@ Avoid generating similar or identical edits.
 - 并行多个小批次可以覆盖更多轨迹模式
 - 每个小批次独立产出 Patch，通过 Aggregate 阶段合并，降低单次分析的偏差
 
-### 3.2 Failure-First 合并策略
+### 4.2 Failure-First 合并策略
 
 Aggregate 阶段给予 failure-driven Patch 更高优先级。
 
 **原因**：修复错误通常比增强优势更能提升整体分数。在最终合并时，failure Patch 的编辑被优先保留。
 
-### 3.3 Edit Budget 作为学习率
+### 4.3 Edit Budget 作为学习率
 
 `edit_budget`（L）控制每步最多应用的编辑数，类比于神经网络中的学习率：
 - L 太大 → 单步改动过多，可能引入 regression
 - L 太小 → 优化速度慢，需要更多 step
 - 默认 L=4，在实验中取得较好平衡
 
-### 3.4 验证门控而非强制接受
+### 4.4 验证门控而非强制接受
 
 每个候选 Skill 必须通过验证门控才能被接受，避免“训练集过拟合”：
 - 候选在验证集上的分数必须**严格优于**当前分数才能被接受
 - 全局最优 Skill 独立追踪，最终部署时使用 best_skill 而非 current_skill
 
-### 3.5 统一并发控制模型
+### 4.5 统一并发控制模型
 
 所有阶段的 LLM 并发调用均由 `train.workers` 统一控制，各阶段默认继承该值，仅在需要单独调整时设置 per-stage 覆盖。
 
@@ -549,7 +721,7 @@ gradient:
 
 ---
 
-## 4. 扩展新算法
+## 5. 扩展新算法
 
 基于 `BaseAlgorithm` 实现新算法只需实现 6 个抽象方法：
 
@@ -590,11 +762,11 @@ class DSPyAlgorithm(BaseAlgorithm):
 
 ---
 
-## 5. 示例资源与数据格式（`resources/trainer-skillopt`）
+## 6. 示例资源与数据格式（`resources/trainer-skillopt`）
 
 `resources/trainer-skillopt` 目录提供了 SkillOpt 训练的完整示例资源，可作为自定义训练任务的参考模板。
 
-### 5.1 目录结构
+### 6.1 目录结构
 
 ```
 resources/trainer-skillopt/
@@ -606,7 +778,7 @@ resources/trainer-skillopt/
     └── example-rollout.json  # Rollout 结果示例（用于理解轨迹格式）
 ```
 
-### 5.2 数据格式（JSONL）
+### 6.2 数据格式（JSONL）
 
 训练数据为 JSONL 格式，每行一个 JSON 对象，字段定义如下：
 
@@ -630,7 +802,7 @@ resources/trainer-skillopt/
 
 > **提示**：`answers` 字段中的答案格式应与 Agent 输出的格式一致。示例中使用 `<answer>X</answer>` 标签包裹答案，配合 `custom-scorer.py` 进行精确匹配。
 
-### 5.3 自定义评分器（`custom-scorer.py`）
+### 6.3 自定义评分器（`custom-scorer.py`）
 
 当内置的 Exact Match 或关键词重叠评分不满足需求时，可提供自定义评分脚本。
 
@@ -660,7 +832,7 @@ def score(sample: dict, predicted: str) -> float:
 
 > **注意**：若不需要自定义评分，可省略此文件，系统将自动使用内置的 Exact Match + 关键词重叠评分机制。
 
-### 5.4 预切分数据集（`split_jsonl/`）
+### 6.4 预切分数据集（`split_jsonl/`）
 
 当使用 `split_mode: split_dir` 时，训练/验证/测试集直接从指定目录读取，无需运行时切分。
 
@@ -690,7 +862,7 @@ env:
   data_path: /path/to/data.jsonl
 ```
 
-### 5.5 Rollout 结果格式（`example-rollout.json`）
+### 6.5 Rollout 结果格式（`example-rollout.json`）
 
 `example-rollout.json` 展示了单条 Rollout 结果的完整结构，便于理解 Reflect 阶段分析的输入格式：
 
@@ -720,7 +892,7 @@ env:
 | `predicted_answer` | Agent 最终输出的完整文本 |
 | `trajectory` | 完整对话轨迹，包含 system/user/assistant 消息 |
 
-### 5.6 快速上手：使用示例资源启动训练
+### 6.6 快速上手：使用示例资源启动训练
 
 **方式一：通过 Dashboard（推荐）**
 

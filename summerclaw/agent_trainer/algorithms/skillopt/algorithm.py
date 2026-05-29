@@ -176,6 +176,9 @@ class SkillOptAlgorithm(BaseAlgorithm):
         # Soft score from last evaluate call (read by trainer)
         self._last_evaluate_soft_score: float = 0.0
 
+        # Per-item rollout results from last evaluate call (read by dashboard)
+        self._last_rollout_results: list[RolloutResult] = []
+
         # Analysis failure count from last reflect call (read by trainer)
         self._last_analysis_failures: int = 0
 
@@ -594,16 +597,26 @@ class SkillOptAlgorithm(BaseAlgorithm):
 
         Returns hard accuracy.  Soft score is stored as
         ``self._last_evaluate_soft_score`` for the trainer to read.
+        Per-item results are stored as ``self._last_rollout_results`` for
+        the dashboard to compute breakdown stats.
         """
         self._last_evaluate_soft_score = 0.0
+        self._last_rollout_results: list = []  # per-item breakdown
         logger.info("[6/6 EVALUATE] {} val items", len(items))
         results = await env.rollout_batch(items, skill, phase_label="6/6 EVALUATE")
         if not results:
             return 0.0
+        self._last_rollout_results = list(results)
         hard_acc = sum(r.hard for r in results) / len(results)
         soft_mean = sum(r.soft for r in results) / len(results)
         self._last_evaluate_soft_score = soft_mean
-        logger.info("[6/6 EVALUATE] hard_acc={:.3f} soft_mean={:.3f}", hard_acc, soft_mean)
+        n_timeout = sum(1 for r in results if r.fail_reason.startswith("rollout_timeout"))
+        n_error = sum(1 for r in results if r.fail_reason and not r.fail_reason.startswith("rollout_timeout") and r.hard == 0)
+        n_correct = sum(1 for r in results if r.hard == 1)
+        logger.info(
+            "[6/6 EVALUATE] hard_acc={:.3f} soft_mean={:.3f} correct={}/{} timeout={} error={}",
+            hard_acc, soft_mean, n_correct, len(results), n_timeout, n_error,
+        )
         return hard_acc
 
     # ── Epoch hooks ────────────────────────────────────────────────────

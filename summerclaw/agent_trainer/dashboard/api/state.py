@@ -85,6 +85,26 @@ class _DashboardState:
         if selected_dir.is_dir() and str(selected_dir) != str(self.engine.out_dir):
             self.engine._set_task_dir(selected_dir)
 
+    def get_engine_for_task(self, task_id: str) -> TrainerEngine:
+        """Return the engine instance for a given task.
+
+        If the scheduler has a per-task engine for *task_id*, return it.
+        Otherwise fall back to the shared template engine.
+        """
+        if self.scheduler is not None:
+            task_engine = self.scheduler.get_task_engine(task_id)
+            if task_engine is not None:
+                return task_engine
+        return self.engine
+
+    def is_task_engine_running(self, task_id: str) -> bool:
+        """Return True if a scheduler-managed engine is running for *task_id*."""
+        if self.scheduler is not None:
+            task_engine = self.scheduler.get_task_engine(task_id)
+            if task_engine is not None:
+                return getattr(task_engine, "is_running", False)
+        return False
+
     def _apply_yaml_to_engine(self, task_dir: Path) -> None:
         """Load skillopt.yaml from *task_dir* and apply to engine params."""
         yaml_path = task_dir / "skillopt.yaml"
@@ -198,8 +218,12 @@ class _DashboardState:
         ]
 
     def get_log_lines(self) -> list[str]:
-        with self.engine._events_lock:
-            recent = list(self.engine._events[-200:])
+        return self.get_log_lines_for_engine(self.engine)
+
+    def get_log_lines_for_engine(self, engine: TrainerEngine) -> list[str]:
+        """Return formatted log lines from a specific engine's events."""
+        with engine._events_lock:
+            recent = list(engine._events[-200:])
         lines = []
         for e in recent:
             ts = e.get("time", "")
@@ -214,6 +238,11 @@ class _DashboardState:
                 extra_str = json.dumps(extra, ensure_ascii=False) if extra else ""
                 lines.append(f"[{ts}] {ev} {extra_str}")
         return lines
+
+    def get_log_events_for_engine(self, engine: TrainerEngine) -> list[dict]:
+        """Return raw event dicts from a specific engine."""
+        with engine._events_lock:
+            return list(engine._events[-100:])
 
     def get_score_chart(self) -> list[dict]:
         steps = self.engine.history.steps

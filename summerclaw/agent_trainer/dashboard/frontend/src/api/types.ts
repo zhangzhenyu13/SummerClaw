@@ -113,6 +113,46 @@ export interface EvalTestResponse {
   summary?: EvalTestSummary;
 }
 
+export interface EvalBreakdownStats {
+  n_total: number;
+  n_correct: number;
+  n_timeout: number;
+  n_error: number;
+  success_rate: number;
+}
+
+export interface EvalComparisonItems {
+  no_skill_score: number;
+  with_skill_score: number;
+  n_items?: number;
+  n_total?: number;
+}
+
+export interface EvalComparison {
+  all_items: EvalComparisonItems;
+  completed_items: EvalComparisonItems;
+  n_both_ok: number;
+  n_at_least_one_ok: number;
+  no_skill_stats: EvalBreakdownStats;
+  with_skill_stats: EvalBreakdownStats;
+}
+
+export interface EvalSingleResult {
+  split: string;
+  with_skill: boolean;
+  score: number;
+  n_items: number;
+  stats?: EvalBreakdownStats;
+  comparison?: EvalComparison;
+}
+
+export interface EvalSingleResponse {
+  status: 'done' | 'not_found';
+  result?: EvalSingleResult;
+  results?: Record<string, EvalSingleResult>;
+  error?: string;
+}
+
 export interface CreateTaskParams {
   name: string;
   description?: string;

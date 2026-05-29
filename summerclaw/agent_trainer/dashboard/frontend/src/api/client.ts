@@ -8,6 +8,7 @@ import type {
   RealtimeSnapshot,
   CreateTaskParams,
   EvalTestResponse,
+  EvalSingleResponse,
   SchedulerInfo,
   ToolCategory,
 } from './types';
@@ -142,9 +143,7 @@ export async function uploadFile(
     body: formData,
   });
   if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-  const data = await res.json() as Record<string, unknown>;
-  if (data.error) throw new Error(String(data.error));
-  return data;
+  return res.json();
 }
 
 export async function listTaskData(
@@ -183,6 +182,21 @@ export async function runEvalTest(taskId: string): Promise<EvalTestResponse | { 
 
 export async function getEvalTest(taskId: string): Promise<EvalTestResponse> {
   return request(`/tasks/${encodeURIComponent(taskId)}/eval_test`);
+}
+
+export async function runEvalSingle(
+  taskId: string,
+  split: 'val' | 'test',
+  withSkill: boolean,
+): Promise<EvalSingleResponse | { error: string }> {
+  return request(`/tasks/${encodeURIComponent(taskId)}/eval_single`, {
+    method: 'POST',
+    body: JSON.stringify({ split, with_skill: withSkill }),
+  });
+}
+
+export async function getEvalSingle(taskId: string): Promise<EvalSingleResponse> {
+  return request(`/tasks/${encodeURIComponent(taskId)}/eval_single`);
 }
 
 // -- Realtime snapshot ------------------------------------------------------

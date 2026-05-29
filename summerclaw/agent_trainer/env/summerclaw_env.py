@@ -135,21 +135,29 @@ def _register_all_memory_algorithms(registry: MemoryRegistry) -> None:
 
 
 class _NullMemoryStore:
-    """No-op memory store used when memory algorithm is disabled (null).
+    """No-op memory store used when memory algorithm is disabled (null)
+    or during eval readonly mode.
 
     All reads return empty strings / empty lists, so ``ContextBuilder``
     builds a system prompt containing only identity + bootstrap files +
     skills — no memory section and no recent history.
 
+    Both ``memory_file`` and ``history_file`` point to non-existent paths
+    so that ``ContextBuilder._get_identity()`` does NOT fall back to legacy
+    paths that might resolve to real files on disk.
+
     The conversation context (tool loop) is independently bounded by
-    ``max_tool_iterations`` which is set to 20 when memory is disabled.
+    ``max_tool_iterations`` which is set to 100 when memory is disabled
+    (single-sample multi-turn, no cross-sample memory).
     """
 
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
-        # Point to a non-existent file so ContextBuilder's
-        # _is_template_content check treats memory as empty.
+        # Point to non-existent files so ContextBuilder's
+        # _is_template_content check treats memory as empty, AND
+        # _get_identity() resolves paths without falling back to legacy.
         self.memory_file = workspace / "memory" / ".null" / "MEMORY.md"
+        self.history_file = workspace / "memory" / ".null" / "history.jsonl"
 
     def get_memory_context(self) -> str:
         return ""
@@ -168,6 +176,42 @@ class _NullMemoryStore:
 
     def read_soul(self) -> str:
         return ""
+
+    def append_history(self, entry: str) -> int:
+        """No-op: silently discard history writes."""
+        return 0
+
+
+class _NullSessionManager:
+    """No-op session manager used by the trainer's memory consolidators.
+
+    Consolidators (naive_memory, mastra_om, etc.) call ``sessions.save()``
+    after advancing ``session.last_consolidated``.  In training we don't
+    need persistent sessions — the epoch session lives in-memory only.
+    This stub silently discards save/get/list calls so consolidators
+    don't crash with ``AttributeError: 'NoneType' has no attribute 'save'``.
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict = {}
+
+    def save(self, session: Any) -> None:
+        """No-op: session state is already updated in-memory."""
+        pass
+
+    def get_or_create(self, key: str) -> Any:
+        """Return a fresh session stub (never persisted)."""
+        from summerclaw.session.manager import Session
+        return Session(key=key)
+
+    def invalidate(self, key: str) -> None:
+        pass
+
+    def list_sessions(self) -> list:
+        return []
+
+    def list_all_sessions(self) -> list:
+        return []
 
 
 def _strip_frontmatter(content: str) -> str:
@@ -239,12 +283,17 @@ class SummerClawEnvAdapter:
         self.train_workspace = Path(train_out_dir)
         self._workspace_ready = False
         self._memory_algorithm_name = memory_algorithm_name
+        # Task ID for session_key isolation in concurrent multi-task training.
+        # Set by TrainerEngine._set_task_dir() when pointing at a task directory.
+        self._task_id: str = ""
 
         self.context_window_tokens = context_window_tokens
-        # When memory is disabled, bound the tool loop to the last 20 turns
-        # (matching the "only recent 20 conversation turns" semantics).
+        # When memory is disabled, each rollout is self-contained (no
+        # cross-sample memory), so we allow up to 100 tool-loop iterations
+        # per sample.  With memory enabled the full iteration budget is
+        # kept because the memory system persists across samples.
         if not memory_algorithm_name or memory_algorithm_name.lower() in ("null", "none"):
-            self.max_tool_iterations = min(max_tool_iterations, 20)
+            self.max_tool_iterations = min(max_tool_iterations, 100)
             logger.debug("Memory disabled: max_tool_iterations capped at {}", self.max_tool_iterations)
         else:
             self.max_tool_iterations = max_tool_iterations
@@ -272,6 +321,15 @@ class SummerClawEnvAdapter:
         # to avoid creating directories (memory/, etc.) at boot time.
         self._mem: MemoryComponents | None = None
         self._context: ContextBuilder | None = None
+
+        # Epoch session: accumulates rollout messages across an epoch so
+        # that the consolidator processes them through the full memory
+        # pipeline (Observer/Archiver/Extractor → history.jsonl,
+        # Reflector → OBSERVATIONS.md, Dream → MEMORY.md/SOUL.md/USER.md).
+        self._epoch_session: Any = None  # Session | None
+        self._rollouts_since_dream: int = 0
+        self._dream_every_n: int = 5  # run Dream every N rollouts
+        self._epoch_mem_lock = asyncio.Lock()
 
         # Eval read-only mode: temporarily swaps in NullMemoryStore during
         # test/val evaluation so no memory content is written.
@@ -321,14 +379,17 @@ class SummerClawEnvAdapter:
             )
             algo = NaiveMemoryAlgorithm()
 
-        # Build with training workspace — memory data stays isolated
-        # Note: we pass minimal build params; dream won't be activated
+        # Build with training workspace — memory data stays isolated.
+        # Pass _NullSessionManager so consolidators can call
+        # sessions.save() without crashing (we don't persist sessions
+        # during training — the epoch session is in-memory only).
+        _sessions = _NullSessionManager()
         try:
             components = algo.build(
                 workspace=self.train_workspace,
                 provider=self.provider,
                 model=self.model,
-                sessions=None,  # no session manager for training
+                sessions=_sessions,
                 context_window_tokens=self.context_window_tokens,
                 build_messages=lambda *a, **kw: [],
                 get_tool_definitions=lambda: [],
@@ -350,7 +411,7 @@ class SummerClawEnvAdapter:
                 workspace=self.train_workspace,
                 provider=self.provider,
                 model=self.model,
-                sessions=None,
+                sessions=_sessions,
                 context_window_tokens=self.context_window_tokens,
                 build_messages=lambda *a, **kw: [],
                 get_tool_definitions=lambda: [],
@@ -381,6 +442,9 @@ class SummerClawEnvAdapter:
             self.train_workspace,
             memory_store=self._mem.store,
         )
+        # Reset epoch session (workspace may have changed)
+        self._epoch_session = None
+        self._rollouts_since_dream = 0
         self._workspace_ready = True
         logger.debug("Training workspace ensured: {}", self.train_workspace)
 
@@ -420,9 +484,9 @@ class SummerClawEnvAdapter:
             self._workspace_ready = False
             self._mem = None
             self._context = None
-            # Re-apply max_tool_iterations cap
+            # Re-apply max_tool_iterations cap (null = no cross-sample memory)
             if normalized == "null":
-                self.max_tool_iterations = min(self.max_tool_iterations, 20)
+                self.max_tool_iterations = min(self.max_tool_iterations, 100)
             # (Don't increase it back if previously capped — the original
             #  value is unknown after cap; the caller can set it explicitly.)
         else:
@@ -492,7 +556,11 @@ class SummerClawEnvAdapter:
         """
         self._ensure_workspace()
         item_id = str(item.get("id", uuid.uuid4().hex[:8]))
-        session_key = f"trainer:epoch{epoch:02d}:step{step:03d}:{item_id}"
+        # Include task_id in session_key for multi-task isolation.
+        # Prevents key collisions when concurrent tasks process the same
+        # epoch/step/item_id combination.
+        _tid = self._task_id or "shared"
+        session_key = f"trainer:{_tid}:e{epoch:02d}:s{step:03d}:{item_id}"
 
         # Build messages
         system_prompt = self._build_system_prompt(skill_content)
@@ -562,6 +630,9 @@ class SummerClawEnvAdapter:
         # Score the result
         hard, soft = await self.score_result(result, item)
 
+        # ── Persist rollout to memory (full pipeline) ──
+        await self._process_rollout_memory(item, result, hard)
+
         # Extract trajectory from messages
         trajectory = result.messages or []
 
@@ -581,6 +652,176 @@ class SummerClawEnvAdapter:
                 for m in trajectory
             ],
         )
+
+    # ── Memory write-back after rollout (full pipeline) ────────────
+
+    def _start_epoch_session(self) -> None:
+        """Create a fresh epoch session for accumulating rollout messages.
+
+        Called lazily on the first rollout of each epoch.  The session
+        accumulates ALL messages across rollouts so the consolidator
+        sees the full conversation trajectory.
+        """
+        from summerclaw.session.manager import Session
+        self._epoch_session = Session(key=f"train:{self._task_id}:epoch")
+        self._rollouts_since_dream = 0
+        logger.debug("Epoch session started (task={})", self._task_id)
+
+    async def flush_dream_for_epoch(self) -> None:
+        """Force a final Dream run to flush accumulated memory.
+
+        Call at epoch boundaries (e.g. before eval or on_epoch_end) to
+        ensure all history.jsonl entries are processed into MEMORY.md /
+        SOUL.md / USER.md before evaluation reads the memory store.
+        """
+        if (
+            self._mem is None
+            or self._mem.dream is None
+            or isinstance(self._mem.store, _NullMemoryStore)
+            or self._eval_readonly
+        ):
+            return
+        try:
+            processed = await self._mem.dream.run()
+            if processed:
+                logger.info("Epoch Dream flush processed memory files")
+            else:
+                logger.debug("Epoch Dream flush: nothing to process")
+        except Exception as exc:
+            logger.warning("Epoch Dream flush failed: {}", exc)
+        self._rollouts_since_dream = 0
+
+    async def _process_rollout_memory(
+        self,
+        item: dict,
+        result: Any,
+        hard_score: float,
+    ) -> None:
+        """Process a rollout through the full memory pipeline.
+
+        Unlike the previous summary-only approach (append_history), this
+        feeds the complete conversation trajectory into the algorithm-specific
+        consolidator:
+
+        - **naive_memory**: ``archive()`` → LLM summarization → history.jsonl
+        - **mastra_om**: ``observe_and_store()`` → Observer → OBSERVATIONS.md
+          + history.jsonl, then ``reflect_and_condense()``
+        - **mem0v3**: ``extract_and_store()`` → LLM extraction → vector store
+        - **supermemory**: ``archive()`` → chunk-based ingestion → memory graph
+        - **Other algorithms**: fallback to raw history append
+
+        Messages accumulate in an *epoch session* across rollouts, so the
+        consolidator sees the growing conversation context.  Dream is
+        triggered every ``_dream_every_n`` rollouts (default: 5) to
+        convert accumulated history into structured memory files
+        (MEMORY.md, SOUL.md, USER.md).
+
+        When memory is null or eval-readonly, this is a no-op.
+        """
+        if (
+            self._mem is None
+            or isinstance(self._mem.store, _NullMemoryStore)
+            or self._eval_readonly
+        ):
+            return
+
+        # Ensure epoch session exists
+        if self._epoch_session is None:
+            self._start_epoch_session()
+
+        trajectory = result.messages or []
+        if not trajectory:
+            return
+
+        async with self._epoch_mem_lock:
+            # Accumulate messages in the epoch session
+            for msg in trajectory:
+                self._epoch_session.add_message(
+                    msg.get("role", "user"),
+                    msg.get("content", ""),
+                    **{k: v for k, v in msg.items()
+                       if k not in ("role", "content")},
+                )
+
+            consolidator = self._mem.consolidator
+            if consolidator is None:
+                # No consolidator — fall back to raw history append
+                self._raw_history_append(item, result, hard_score)
+                return
+
+            try:
+                await self._run_consolidator(consolidator, trajectory)
+            except Exception as exc:
+                logger.warning(
+                    "Consolidator failed for rollout, falling back to raw append: {}",
+                    exc,
+                )
+                self._raw_history_append(item, result, hard_score)
+
+            # Periodic Dream processing
+            self._rollouts_since_dream += 1
+            if (
+                self._rollouts_since_dream >= self._dream_every_n
+                and self._mem.dream is not None
+            ):
+                try:
+                    await self._mem.dream.run()
+                    logger.info(
+                        "Dream processed after {} rollouts",
+                        self._rollouts_since_dream,
+                    )
+                except Exception as exc:
+                    logger.warning("Periodic Dream failed: {}", exc)
+                self._rollouts_since_dream = 0
+
+    async def _run_consolidator(
+        self,
+        consolidator: Any,
+        trajectory: list[dict],
+    ) -> None:
+        """Route trajectory to the algorithm-specific consolidation method."""
+        if hasattr(consolidator, 'observe_and_store'):
+            # mastra_om: Observer → OBSERVATIONS.md + history.jsonl
+            await consolidator.observe_and_store(trajectory)
+            try:
+                await consolidator.reflect_and_condense()
+            except Exception as exc:
+                logger.debug("reflect_and_condense: {}", exc)
+        elif hasattr(consolidator, 'archive'):
+            # naive_memory / supermemory: LLM summarization → history.jsonl
+            await consolidator.archive(trajectory)
+        elif hasattr(consolidator, 'extract_and_store'):
+            # mem0v3: LLM extraction → vector store
+            await consolidator.extract_and_store(trajectory, None)
+        elif hasattr(consolidator, '_process_messages'):
+            # nemori: buffer-based processing
+            for msg in trajectory:
+                consolidator._process_messages(msg)
+        else:
+            logger.debug(
+                "Unknown consolidator type {}, skipping",
+                type(consolidator).__name__,
+            )
+
+    def _raw_history_append(
+        self,
+        item: dict,
+        result: Any,
+        hard_score: float,
+    ) -> None:
+        """Fallback: append a rollout summary to history.jsonl."""
+        store = self._mem.store
+        try:
+            question = item.get("question", "")[:200]
+            answer = (result.final_content or "")[:300]
+            label = "PASS" if hard_score else "FAIL"
+            entry = (
+                f"[Rollout] {label} | Q: {question}\n"
+                f"A: {answer}"
+            )
+            store.append_history(entry)
+        except Exception as exc:
+            logger.warning("Failed to save rollout to memory: {}", exc)
 
     async def rollout_batch(
         self,

@@ -1,94 +1,51 @@
-/** Baseline vs Best Score bar chart — supports val + test grouped bars. */
+/** Baseline vs Best Score bar chart — shows all items and completed items comparison. */
 
 import React from 'react';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, LabelList,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList,
 } from 'recharts';
-import type { EvalSplitResult } from '../api/types';
+import type { EvalSingleResult } from '../api/types';
 
 interface Props {
-  baseline: number;
-  best: number;
-  valResult?: EvalSplitResult | null;
-  testResult?: EvalSplitResult | null;
+  results: Record<string, EvalSingleResult>;
 }
 
-export const BaselineBarChart: React.FC<Props> = ({ baseline, best, valResult, testResult }) => {
-  // Use new grouped format when val/test results are available
-  const hasSplitResults = valResult || testResult;
+export const BaselineBarChart: React.FC<Props> = ({ results }) => {
+  // Build chart data from comparison data
+  const splits = [...new Set(Object.values(results).map(r => r.split))];
 
-  if (hasSplitResults) {
-    const data: { name: string; Baseline: number; Best: number }[] = [];
-    if (valResult) {
-      data.push({
-        name: 'Val',
-        Baseline: valResult.score_no_skill,
-        Best: valResult.score_with_skill,
-      });
-    }
-    if (testResult) {
-      data.push({
-        name: 'Test',
-        Baseline: testResult.score_no_skill,
-        Best: testResult.score_with_skill,
-      });
-    }
+  const data: {
+    name: string;
+    'All - No Skill': number;
+    'All - Skill': number;
+    'Completed - No Skill': number;
+    'Completed - Skill': number;
+  }[] = [];
 
-    return (
-      <div>
-        <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="name" />
-            <YAxis
-              domain={[0, 'auto']}
-              label={{ value: 'Score', angle: -90, position: 'insideLeft' }}
-            />
-            <Tooltip formatter={(v: number) => v.toFixed(4)} />
-            <Legend />
-            <Bar dataKey="Baseline" fill="#8c8c8c" radius={[6, 6, 0, 0]} barSize={50}>
-              <LabelList
-                dataKey="Baseline"
-                position="top"
-                formatter={(v: number) => v.toFixed(3)}
-                style={{ fontSize: 11, fontWeight: 500 }}
-              />
-            </Bar>
-            <Bar dataKey="Best" fill="#1677ff" radius={[6, 6, 0, 0]} barSize={50}>
-              <LabelList
-                dataKey="Best"
-                position="top"
-                formatter={(v: number) => v.toFixed(3)}
-                style={{ fontSize: 11, fontWeight: 500 }}
-              />
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-        {data.map((d) => {
-          const improvement = d.Baseline > 0 ? ((d.Best - d.Baseline) / d.Baseline) * 100 : 0;
-          const delta = d.Best - d.Baseline;
-          return (
-            <div key={d.name} style={{ textAlign: 'center', marginTop: 6, color: improvement >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>
-              {d.name}: {improvement >= 0 ? '▲' : '▼'} {improvement >= 0 ? '+' : ''}{improvement.toFixed(2)}%
-              &nbsp;|&nbsp; Δ = {delta >= 0 ? '+' : ''}{delta.toFixed(4)}
-            </div>
-          );
-        })}
-      </div>
-    );
+  for (const split of splits) {
+    const withSkillResult = results[`${split}_with_skill`];
+    const noSkillResult = results[`${split}_no_skill`];
+
+    if (!withSkillResult || !noSkillResult) continue;
+
+    const comp = withSkillResult.comparison;
+    if (!comp) continue;
+
+    data.push({
+      name: split.charAt(0).toUpperCase() + split.slice(1),
+      'All - No Skill': comp.all_items.no_skill_score,
+      'All - Skill': comp.all_items.with_skill_score,
+      'Completed - No Skill': comp.completed_items.no_skill_score,
+      'Completed - Skill': comp.completed_items.with_skill_score,
+    });
   }
 
-  // Legacy single-bar format
-  const data = [
-    { name: 'Baseline', score: baseline, fill: '#8c8c8c' },
-    { name: 'Best (Trained)', score: best, fill: '#1677ff' },
-  ];
-  const improvement = baseline > 0 ? ((best - baseline) / baseline) * 100 : 0;
+  if (!data.length) return null;
 
   return (
     <div>
-      <ResponsiveContainer width="100%" height={260}>
-        <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+      <ResponsiveContainer width="100%" height={300}>
+        <BarChart data={data} margin={{ top: 20, right: 20, left: 20, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="name" />
           <YAxis
@@ -96,26 +53,35 @@ export const BaselineBarChart: React.FC<Props> = ({ baseline, best, valResult, t
             label={{ value: 'Score', angle: -90, position: 'insideLeft' }}
           />
           <Tooltip formatter={(v: number) => v.toFixed(4)} />
-          <Bar dataKey="score" radius={[6, 6, 0, 0]} barSize={80}>
-            {data.map((entry, idx) => (
-              <Cell key={idx} fill={entry.fill} />
-            ))}
-            <LabelList
-              dataKey="score"
-              position="top"
-              formatter={(v: number) => v.toFixed(4)}
-              style={{ fontSize: 13, fontWeight: 600 }}
-            />
+          <Legend />
+          <Bar dataKey="All - No Skill" fill="#bfbfbf" radius={[4, 4, 0, 0]} barSize={30}>
+            <LabelList dataKey="All - No Skill" position="top" formatter={(v: number) => v.toFixed(2)} style={{ fontSize: 10 }} />
+          </Bar>
+          <Bar dataKey="All - Skill" fill="#8c8c8c" radius={[4, 4, 0, 0]} barSize={30}>
+            <LabelList dataKey="All - Skill" position="top" formatter={(v: number) => v.toFixed(2)} style={{ fontSize: 10 }} />
+          </Bar>
+          <Bar dataKey="Completed - No Skill" fill="#91d5ff" radius={[4, 4, 0, 0]} barSize={30}>
+            <LabelList dataKey="Completed - No Skill" position="top" formatter={(v: number) => v.toFixed(2)} style={{ fontSize: 10 }} />
+          </Bar>
+          <Bar dataKey="Completed - Skill" fill="#1677ff" radius={[4, 4, 0, 0]} barSize={30}>
+            <LabelList dataKey="Completed - Skill" position="top" formatter={(v: number) => v.toFixed(2)} style={{ fontSize: 10 }} />
           </Bar>
         </BarChart>
       </ResponsiveContainer>
-      {baseline > 0 && best > 0 && (
-        <div style={{ textAlign: 'center', marginTop: 8, color: improvement >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>
-          {improvement >= 0 ? '▲' : '▼'} Improvement: {improvement >= 0 ? '+' : ''}{improvement.toFixed(2)}%
-          &nbsp;&nbsp;|&nbsp;&nbsp;
-          Δ = {(best - baseline).toFixed(4)}
-        </div>
-      )}
+      {data.map((d) => {
+        const allDelta = d['All - Skill'] - d['All - No Skill'];
+        const completedDelta = d['Completed - Skill'] - d['Completed - No Skill'];
+        return (
+          <div key={d.name} style={{ textAlign: 'center', marginTop: 8 }}>
+            <div style={{ color: allDelta >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>
+              {d.name} (All): Δ = {allDelta >= 0 ? '+' : ''}{allDelta.toFixed(4)}
+            </div>
+            <div style={{ color: completedDelta >= 0 ? '#52c41a' : '#ff4d4f', fontWeight: 500 }}>
+              {d.name} (Completed): Δ = {completedDelta >= 0 ? '+' : ''}{completedDelta.toFixed(4)}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 };

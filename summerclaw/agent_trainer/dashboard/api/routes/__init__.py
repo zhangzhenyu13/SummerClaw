@@ -22,6 +22,7 @@ def register_all(router: APIRouter, state: _DashboardState) -> None:
         data,
         config,
         realtime,
+        moscopt,
     )
 
     task_list.register(router, state)
@@ -31,3 +32,4 @@ def register_all(router: APIRouter, state: _DashboardState) -> None:
     data.register(router, state)
     config.register(router, state)
     realtime.register(router, state)
+    moscopt.register(router, state)
